@@ -1,0 +1,24 @@
+- network & concurrency
+  - tokio (async runtime)
+  - reqwest (async http)
+- raw or rendered
+  - chromiumoxide
+  - > you may choose to skip this step if raw html is enough. otherwise render the js using chromiumoxide.
+- html parsing
+  - scraper (supports css selectors) OR tl (simpler, faster)
+- data persistence
+  - sqlx (async database library)
+  - > (?) PostgreSQL is generally the best fit for crawlers because it natively handles high-concurrency INSERTs and UPSERTs well
+  - > you may also consider sqlite (simpler?)
+- api layer
+  - axum, serde
+  - > only if you wish to attach a rest api server to the crawler
+- extras
+  - tracing, tracing-subscriber (async logging)
+  - governor (rate limiting, avoid DDOS detection)
+  - robotstxt (self-explaining)
+  - tower (Manages retries and timeouts)
+  - readability (extracts the main content, strips everything else)
+  - adblock (filter links that may come from ads)
+  - anyhow/thiserror (error propagation?)
+  - url (normalize urls, ex: example.com/#page to example.com)
