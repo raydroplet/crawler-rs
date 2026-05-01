@@ -28,13 +28,33 @@
 
 ### Visualization
 - egui, egui_graphs
+  - > consider trunk for a wasm view
+- egui_html, egui_commonmark
+  - > displaying the scrapped pages may also be useful, consider those libraries (or other existing options)
+  - suggestion: convert the pages to markdown and render it
 
 ## Interface
 - hierarchy
   - menu bar
+    - file: save graph, load graph, export data (json/csv), Quit?
+    - edit: clear state
+    - view: dark/light mode?
+    - settigs: (to define)
     - about: short description of the project with a link to the github repo (alike the ones from linux gtk apps)
   - graph panel (cover most of the window)
-  - retractable left/right panel (control or info)
+    - what we must have additionally: layout choice and their related configuration values; navigation (fit_to_screen, zoom_and_pan); dark/light mode
+    - use defaults (or code configured) options for the other simulation values
+    - node labels and icons may be considered. but they are not available by default
+    - test the second layout with a real web graph. it may not look good, so it's less trouble having one single layout instead of both.
+  - left panel
+    - > comand and control
+    - seed url
+    - pause/stop
+  - floating panel
+    - > inspector
+    - displays info about a certain node
+  - (optional?) bottom log panel
+    - alike a terminal output (coming from the backend)
 - ideas
   - console with the backend output
   - some other graphs
