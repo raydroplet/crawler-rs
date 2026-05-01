@@ -1,3 +1,6 @@
+## Libraries
+### Scrapping
+
 - network & concurrency
   - tokio (async runtime)
   - reqwest (async http)
@@ -22,3 +25,18 @@
   - adblock (filter links that may come from ads)
   - anyhow/thiserror (error propagation?)
   - url (normalize urls, ex: example.com/#page to example.com)
+
+### Visualization
+- egui, egui_graphs
+
+## Interface
+- hierarchy
+  - menu bar
+    - about: short description of the project with a link to the github repo (alike the ones from linux gtk apps)
+  - graph panel (cover most of the window)
+  - retractable left/right panel (control or info)
+- ideas
+  - console with the backend output
+  - some other graphs
+    - visualizations from scrapping output and identified connections?
+    - real time throughput rate of crawling (imagine the ones from aristocratos/btop)
