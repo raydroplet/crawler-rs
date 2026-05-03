@@ -13,6 +13,7 @@ impl App {
     }
 
     pub fn run(&self) {
+        let _result = self.view.run();
         println!("Hello!");
     }
 }

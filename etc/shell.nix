@@ -1,26 +1,29 @@
-{ pkgs ? import <nixpkgs> {} }:
+let
+  rustOverlay = builtins.fetchGit {
+    url = "https://github.com/oxalica/rust-overlay.git";
+    ref = "master";
+  };
 
+  pkgs = import <nixpkgs> {
+    overlays = [ (import rustOverlay) ];
+  };
+in
 pkgs.mkShell {
   buildInputs = with pkgs; [
     wayland
     libxkbcommon
-
-    # Use Nix-native Rust instead of rustup to avoid FHS wrapper issues
-    # cargo
-    rustc
-    # clippy
-    # rustfmt
-
     clang
     lld
     pkg-config
   ];
 
-shellHook = ''
-  export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [
-    pkgs.wayland
-    pkgs.libxkbcommon
-    pkgs.libglvnd
-  ]}:$LD_LIBRARY_PATH
-'';
+  shellHook = ''
+    export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [
+      pkgs.wayland
+      pkgs.libxkbcommon
+      pkgs.libglvnd
+      pkgs.xorg.libX11
+      pkgs.xorg.libXi
+    ]}:$LD_LIBRARY_PATH
+  '';
 }
