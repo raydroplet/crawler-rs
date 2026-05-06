@@ -42,6 +42,7 @@
     - settigs: (to define)
     - about: short description of the project with a link to the github repo (alike the ones from linux gtk apps)
   - graph panel (cover most of the window)
+    - tabs, each with it's own graph session
     - what we must have additionally: layout choice and their related configuration values; navigation (fit_to_screen, zoom_and_pan); dark/light mode
     - use defaults (or code configured) options for the other simulation values
     - node labels and icons may be considered. but they are not available by default

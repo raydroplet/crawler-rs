@@ -8,3 +8,4 @@ eframe = "0.34.1"
 egui = "0.34.1"
 egui_graphs = "0.30.0"
 petgraph = "0.8.3"
+rand = { version = "0.10.1", features = ["thread_rng"] }

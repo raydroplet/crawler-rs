@@ -3,7 +3,7 @@ let
     url = "https://github.com/oxalica/rust-overlay.git";
     ref = "master";
   };
-
+  
   pkgs = import <nixpkgs> {
     overlays = [ (import rustOverlay) ];
   };
@@ -12,6 +12,7 @@ pkgs.mkShell {
   buildInputs = with pkgs; [
     wayland
     libxkbcommon
+    rust-bin.stable."1.93.0".default
     clang
     lld
     pkg-config
