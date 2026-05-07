@@ -3,7 +3,7 @@ let
     url = "https://github.com/oxalica/rust-overlay.git";
     ref = "master";
   };
-  
+
   pkgs = import <nixpkgs> {
     overlays = [ (import rustOverlay) ];
   };

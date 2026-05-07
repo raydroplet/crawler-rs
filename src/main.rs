@@ -1,5 +1,6 @@
 mod app;
 mod gui;
+mod crawler;
 
 use app::{App};
 

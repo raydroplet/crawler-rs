@@ -1,15 +1,18 @@
 use eframe;
+use egui::Pos2;
 use egui_graphs::{FruchtermanReingoldWithCenterGravityState, Layout};
 use petgraph::{
+    Directed,
+    Undirected,
     // graph::IndexType,
     stable_graph::{/* EdgeIndex, NodeIndex, */ DefaultIx, StableGraph},
-    Directed, Undirected
 };
 use rand::RngExt;
-use egui::Pos2;
 
 pub struct EguiView {
     graph: egui_graphs::Graph<(), (), Undirected>,
+    pub show_markdown_window: bool,
+    pub markdown_text: String, // Store the raw markdown text here
 }
 
 impl EguiView {
@@ -17,8 +20,52 @@ impl EguiView {
         let mut graph = Self::generate_basic_graph();
         Self::distribute_nodes_circle_generic(&mut graph);
 
+        let text = "# Regnata removete motis patris
+
+## Quid atque
+
+Lorem markdownum finibus memorique ignis per alvo longeque dea eburnas serior,
+eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
+
+> Ad Philammon viarum genitas nullosque cervicis legem; per simul simulantis
+> ignisque solvo num; tellus sequitur: oro. Quibus adspexisse Ilios. Mentisque
+> vitae Saturnia; quidem resque squamea contingere curvamine artesque!
+
+## Fretum prohibet virtute una
+
+Et caput idem, ullo est ventusve suique deos Horamque stultos; tuta. Nos
+[cognoscere](#adversaque-pulchrior-membra-vultu) vult bellatricemque timidum me
+Haemum locorum remotus an iubent segetis **erat clauditur**. Patriaeque murice
+et o densis `memory_cluster_xhtml` admonuit mare carcere armentum effundite
+sacrificos magnum.
+
+## Inquit quae Me terra
+
+Quae `soap_quicktime` cacumina temptamina in Symplegadas tenebrae, sanguine
+iactatis iussit. Scire coeptaeque altius data umbra praerupta cinctum serpentis
+tosti et dos parantem hinc et ambit si quaerit ab quos maternos.
+
+- Ille omnia
+- Uti aere et
+- Aevo quae fluctus
+- Aries latratus levare et membra curvataque fatigatum
+- Auroque huic tanti cum modo quaerente creatis
+
+## Adversaque Pulchrior membra vultu
+
+Locorum tenebrasque fumant arguitur, tetigere in boumque coepit consequitur olim
+magnus tu inquit ut draconem haurit ut. Natos ulla velut Faunine, rorantia
+puppis indagine femori, te fuit et.
+
+1. Primum quod
+2. Viam tua patetis miratur saucius glomerataque mater
+3. Felicissima iamque ungues manibus reseratis hic subito
+4. Vulgatos mulcendaque ausum Emathiique culmina vitae";
+
         Self {
             graph: graph,
+            show_markdown_window: false,
+            markdown_text: String::from(text), // Store the raw markdown text here
         }
     }
 
@@ -68,14 +115,19 @@ impl EguiView {
 
     fn generate_basic_graph() -> egui_graphs::Graph<(), (), Undirected, DefaultIx> {
         // let petgraph: StableGraph<(), (), Undirected, DefaultIx> = Self::generate_basic_petgraph();
-        let petgraph: StableGraph<(), (), Undirected, DefaultIx> = Self::generate_random_petgraph(100, 300);
-        let graph: egui_graphs::Graph<(), (), Undirected, DefaultIx> = egui_graphs::Graph::from(&petgraph);
+        let petgraph: StableGraph<(), (), Undirected, DefaultIx> =
+            Self::generate_random_petgraph(100, 300);
+        let graph: egui_graphs::Graph<(), (), Undirected, DefaultIx> =
+            egui_graphs::Graph::from(&petgraph);
         //
         graph
     }
 
     /// Generates a random graph with the specified number of nodes and edges.
-    pub fn generate_random_petgraph(num_nodes: usize, num_edges: usize) -> StableGraph<(), (), Undirected, DefaultIx> {
+    pub fn generate_random_petgraph(
+        num_nodes: usize,
+        num_edges: usize,
+    ) -> StableGraph<(), (), Undirected, DefaultIx> {
         let mut rng = rand::rng();
         let mut graph: StableGraph<(), (), Undirected, DefaultIx> = StableGraph::default();
 
@@ -130,115 +182,207 @@ impl EguiView {
 }
 
 impl eframe::App for EguiView {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            let mut view = egui_graphs::GraphView::<
-                _,
-                _,
-                _,
-                _,
-                _,
-                _,
-                FruchtermanReingoldWithCenterGravityState,
-                egui_graphs::LayoutForceDirected<egui_graphs::FruchtermanReingoldWithCenterGravity>,
-            >::new(&mut self.graph);
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // 1. Define the shared frame WITH proper margins
+        let menu_frame = egui::Frame::default()
+            .fill(ui.visuals().extreme_bg_color)
+            // Add 8px padding on the left/right, and 4px on the top/bottom.
+            // This gives the buttons breathing room without breaking the edge-to-edge background.
+            .inner_margin(egui::Margin::symmetric(8, 4));
 
-            ui.add(&mut view);
-        });
+        let graph_frame = egui::Frame::default()
+            .fill(ui.visuals().extreme_bg_color)
+            // Add 8px padding on the left/right, and 4px on the top/bottom.
+            // This gives the buttons breathing room without breaking the edge-to-edge background.
+            .inner_margin(egui::Margin::symmetric(8, 4));
+
+        // 2. Global Top Menu
+        egui::Panel::top("top_menu_bar")
+            .frame(menu_frame)
+            .show_inside(ui, |ui| {
+                egui::MenuBar::new().ui(ui, |ui| {
+                    ui.menu_button("File", |ui| {
+                        if ui.button("📂 Open Graph...").clicked() {
+                            println!("Open");
+                        }
+                        if ui.button("💾 Save State").clicked() {
+                            println!("Save");
+                        }
+                        ui.separator();
+                        if ui.button("❌ Exit").clicked() {
+                            ui.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+
+                    ui.menu_button("View", |ui| {
+                        if ui.button("🔄 Reset Layout").clicked() {
+                            println!("Reset");
+                        }
+                        if ui.button("⚙ Settings").clicked() {
+                            println!("Settings");
+                        }
+                    });
+                });
+            });
+
+        let panel_frame = egui::Frame::window(&ui.style());
+
+        // 3. Left Panel: Crawling Input (Styled)
+        egui::Panel::left("left_crawling_input")
+            .frame(panel_frame.clone()) // Apply the window style
+            .resizable(true)
+            .default_size(220.0)
+            .show_inside(ui, |ui| {
+                ui.add_space(4.0);
+                ui.heading("Crawling Input");
+                ui.separator();
+                ui.label("Seed URL:");
+                ui.add_space(10.0);
+                ui.label("Max Depth: 3");
+                ui.label("Concurrency: 10");
+            });
+
+        // 4. Right Panel: Crawling Inspector (Styled)
+        egui::Panel::right("right_crawling_inspector")
+            .frame(panel_frame) // Apply the window style
+            .resizable(true)
+            .default_size(280.0)
+            .show_inside(ui, |ui| {
+                ui.add_space(4.0);
+                ui.heading("Inspector");
+                ui.separator();
+                ui.label("Selected Node Details:");
+                ui.add_space(4.0);
+                ui.label("No node selected.");
+
+                if ui.button("📝 Open Markdown Source").clicked() {
+                    self.show_markdown_window = !self.show_markdown_window;
+                }
+            });
+
+        // 5. Central Panel LAST
+        egui::CentralPanel::default()
+            .frame(graph_frame)
+            .show_inside(ui, |ui| {
+                // // --- Inner Toolbar (Centered) ---
+                // egui::Panel::top("top_graph_bar")
+                //     .frame(menu_frame) // Inherits the 4px vertical breathing room
+                //     .show_inside(ui, |ui| {
+                //
+                //         // Use a horizontal layout and calculate the exact center
+                //         ui.horizontal(|ui| {
+                //             // 3 standard buttons are roughly 180 pixels wide total.
+                //             // We find the middle of the screen, and subtract half of that width (90.0)
+                //             let center_offset = (ui.available_width() / 2.0) - 90.0;
+                //
+                //             // Push the buttons to the middle
+                //             ui.add_space(center_offset.max(0.0));
+                //
+                //             if ui.button("▶ Play").clicked() {}
+                //             if ui.button("⏸ Pause").clicked() {}
+                //             if ui.button("⏹ Stop").clicked() {}
+                //         });
+                //
+                //     });
+
+                // 1. Get the exact bounding box of the Central Panel
+                let central_rect = ui.max_rect();
+
+                // 2. Draw the floating window, but constrain it to that box
+                if self.show_markdown_window {
+                    egui::Window::new("Markdown Source")
+                        .open(&mut self.show_markdown_window)
+                        .resizable(true)
+                        .collapsible(true)
+                        // --- THIS IS THE MAGIC LINE ---
+                        .constrain_to(central_rect)
+                        .default_size([500.0, 400.0])
+                        .show(ui.ctx(), |ui| {
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut self.markdown_text)
+                                        .font(egui::TextStyle::Monospace)
+                                        .code_editor()
+                                        .interactive(false)
+                                        .desired_width(f32::INFINITY),
+                                );
+                            });
+                        });
+                }
+                // ui.separator();
+
+                // --- The Graph Widget ---
+                let mut view = egui_graphs::GraphView::<
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    FruchtermanReingoldWithCenterGravityState,
+                    egui_graphs::LayoutForceDirected<
+                        egui_graphs::FruchtermanReingoldWithCenterGravity,
+                    >,
+                >::new(&mut self.graph);
+
+                ui.add(&mut view);
+            });
     }
 }
 
-// NOTE:
-// egui_graphs/src/with_extras, defines specializations for:
-// FruchtermanReingoldWithCenterGravity && FruchtermanReingoldWithCenterGravityState
-
-// NOTE:
-// (executor/plain-data)?
+// impl EguiView {
+//     fn panels(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+//         // panel for menu bar
+//         let mut style = egui::Frame::new().inner_margin(4);
+//         let mut cmd = Command::Nothing;
 //
-//  pub type FruchtermanReingoldWithCenterGravity = FruchtermanReingoldWithExtras<(Extra<CenterGravity, true>, ())>;
-//  pub type FruchtermanReingoldWithCenterGravityState = FruchtermanReingoldWithExtrasState<(Extra<CenterGravity, true>, ())>;
-
-// NOTE: reads current UI layout
+//         egui::Panel::top("wrap_app_top_bar")
+//             .frame(style)
+//             .show_inside(ui, |ui| {
+//                 ui.horizontal_wrapped(|ui| {
+//                     ui.visuals_mut().button_frame = false;
+//                     self.bar_contents(ui, frame, &mut cmd);
+//                 });
+//             });
+//     }
 //
-// pub fn from_ui_fr_state(ui: &mut egui::Ui) -> egui_graphs::LayoutSpec {
-//     let st = egui_graphs::get_layout_state::<
-//         egui_graphs::FruchtermanReingoldWithCenterGravityState,
-//     >(ui, None);
-//     LayoutSpec::FruchtermanReingold {
-//         running: Some(st.base.is_running),
-//         dt: Some(st.base.dt),
-//         epsilon: Some(st.base.epsilon),
-//         damping: Some(st.base.damping),
-//         max_step: Some(st.base.max_step),
-//         k_scale: Some(st.base.k_scale),
-//         c_attract: Some(st.base.c_attract),
-//         c_repulse: Some(st.base.c_repulse),
-//         extras: Some(vec![ExtrasSpec::CenterGravity {
-//             enabled: Some(st.extras.0.enabled),
-//             c: Some(st.extras.0.params.c),
-//         }]),
+//     fn bar_contents(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, cmd: &mut Command) {
+//         ui.add_space(8.0);
+//         ui.separator();
+//         ui.menu_button("💻 Backend", |ui| {
+//             ui.set_style(ui.global_style()); // ignore the "menu" style set by `menu_button`.
+//             self.backend_panel_contents(ui, frame, cmd);
+//         });
+//
+//         ui.separator();
+//
+//         let mut selected_anchor = self.state.selected_anchor;
+//         for (name, anchor, _app) in self.apps_iter_mut() {
+//             if ui
+//                 .selectable_label(selected_anchor == anchor, name)
+//                 .clicked()
+//             {
+//                 selected_anchor = anchor;
+//                 if frame.is_web() {
+//                     ui.open_url(egui::OpenUrl::same_tab(format!("#{anchor}")));
+//                 }
+//             }
+//         }
+//         self.state.selected_anchor = selected_anchor;
+//
+//         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+//             if false {
+//                 // TODO(emilk): fix the overlap on small screens
+//                 if clock_button(ui, crate::seconds_since_midnight()).clicked() {
+//                     self.state.selected_anchor = Anchor::Clock;
+//                     if frame.is_web() {
+//                         ui.open_url(egui::OpenUrl::same_tab("#clock"));
+//                     }
+//                 }
+//             }
+//
+//             egui::warn_if_debug_build(ui);
+//         });
 //     }
 // }
-
-// NOTE: random graph
 //
-// let value: egui_graphs::Graph = egui_graphs::generate_random_graph(10, 10);
-//
-// (Graph -> GraphView)?
-
-// NOTE: this can help shape a random graph
-//
-// Self::distribute_nodes_circle_generic(&mut g);
-
-// NOTE: graph widget declaration
-//
-// (DemoGraph::Directed(ref mut g), DemoLayout::FruchtermanReingold) => {
-//     if let Some(spec::PendingLayout::FR(st)) = self.pending_layout.take() {
-//         egui_graphs::set_layout_state::<FruchtermanReingoldWithCenterGravityState>(
-//             ui, st, None,
-//         );
-//     }
-//     let mut view = egui_graphs::GraphView::<
-//         _,
-//         _,
-//         _,
-//         _,
-//         _,
-//         _,
-//         FruchtermanReingoldWithCenterGravityState,
-//         LayoutForceDirected<FruchtermanReingoldWithCenterGravity>,
-//     >::new(g)
-//     .with_interactions(settings_interaction)
-//     .with_navigations(settings_navigation)
-//     .with_styles(settings_style);
-//     #[cfg(feature = "events")]
-//     {
-//         #[cfg(not(target_arch = "wasm32"))]
-//         {
-//             view = view.with_event_sink(&self.event_publisher);
-//         }
-//         #[cfg(target_arch = "wasm32")]
-//         {
-//             view = view.with_event_sink(&self.events_buf);
-//         }
-//     }
-//     ui.add(&mut view);
-// }
-
-// NOTE: egui_graphs::GraphView parameters
-//
-// () — Node Weight: The data attached to the nodes.
-// () — Edge Weight: The data attached to the edges.
-// petgraph::Directed (or Undirected) — Edge Type: Whether the graph has arrows.
-// petgraph::stable_graph::DefaultIx — Index Type: The integer size used for IDs (usually u32).
-// egui_graphs::DefaultNodeShape — Node Shape: How the node is drawn.
-// egui_graphs::DefaultEdgeShape — Edge Shape: How the edge is drawn.
-// FruchtermanReingoldWithCenterGravityState — Layout State: The runtime parameters of the layout.
-// LayoutForceDirected<...> — Layout Algorithm: The physics engine used.
-
-// TODO:
-// implement a custom Layout to handle varying node size and correct node repulsion/collisions
-
-// NOTE:
-// The Graph may be dumb data container, and the GraphView may be the active engine that performs the calculations and updates that container.
-
