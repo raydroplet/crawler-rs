@@ -9,5 +9,6 @@ egui = "0.34.1"
 egui_graphs = "0.30.0"
 petgraph = "0.8.3"
 rand = { version = "0.10.1", features = ["thread_rng"] }
-reqwest = "0.13.3"
-tokio = "1.52.2"
+reqwest = { version = "0.13", features = ["json"] }
+scraper = "0.27.0"
+tokio = { version = "1", features = ["full"] }
