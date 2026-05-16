@@ -19,8 +19,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .build()?;
 
     let url = Url::parse("https://en.wikipedia.org/wiki/Rust_(programming_language)")?;
-    let body: String = request_webpage(url.clone(), &client).await?;
-    let links: Vec<Url> = parse_webpage_links(&body, &url)?.into_iter().collect();
+    let mut links: Vec<Url> = Vec::new();
+
+    if let Some(body) = request_webpage(url.clone(), &client).await? {
+        links.extend(parse_webpage_links(&body, &url)?.into_iter());
+    }
 
     println!("Found:");
     for link in links {
@@ -30,17 +33,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn request_webpage(url: Url, client: &Client) -> Result<String, reqwest::Error> {
+async fn request_webpage(url: Url, client: &Client) -> Result<Option<String>, reqwest::Error> {
     let response = client
         .get(url)
         .send() //
         .await?;
 
+    // extract the content-type header
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|val| val.to_str().ok())
+        .unwrap_or(""); // default to empty if the server didn't send a header
+
+    // if it is not html, return none
+    if !content_type.starts_with("text/html") {
+        return Ok(None);
+    }
+
     let body = response
         .text() //
         .await?;
 
-    Ok(body)
+    Ok(Some(body))
 }
 
 fn parse_webpage_links(body: &String, base_url: &Url) -> Result<HashSet<Url>, Box<dyn Error>> {
@@ -55,6 +70,11 @@ fn parse_webpage_links(body: &String, base_url: &Url) -> Result<HashSet<Url>, Bo
             if let Ok(mut absolute_url) = base_url.join(href) {
                 // remove headers (page.com/article#header -> page.com/article)
                 absolute_url.set_fragment(None);
+                // remove query parameters (?action=edit)
+                // NOTE: this filters some valid links (like youtube.com/watch?v=video_id)
+                absolute_url.set_query(None);
+
+                //
                 extracted_urls.insert(absolute_url);
             }
         }
@@ -145,7 +165,9 @@ fn parse_webpage_links(body: &String, base_url: &Url) -> Result<HashSet<Url>, Bo
 
 
 // TODO:
-// 1. create a reqwest client and pass it for tasks to use
-// 2. The User-Agent Header (Avoiding Blocks)
-// 3. timeouts
-// 4. handle gttp 404 or 500, as they will simply return the html error page
+// 1. [-] create a reqwest client and pass it for tasks to use
+// 2. [x] The User-Agent Header (Avoiding Blocks)
+// 3. [x] timeouts
+// 4. [ ] handle gttp 404 or 500, as they will simply return the html error page
+// 5. [ ] respect robots.txt
+// 6. [ ] implement delays for each individual website
