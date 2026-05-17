@@ -5,102 +5,239 @@ use std::error::Error;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-const SIGNATURE: &str = "raydroplet";
-const REPOSITORY: &str = "crawler-rs";
+//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
+// what the external world sees
 
 struct CrawlRequest {
     source: Url,
     depth: u32,
 }
 
-struct CrawlResult {
+pub enum CrawlCommand {
+    RequestCrawl(CrawlRequest), // starts a crawl of a defined depth
+    Terminate,
+}
+
+pub enum CrawlResponse {
+    Page(ParserResult), // occasionally returns the result of a single page crawl
+}
+
+//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
+// (mostly) interal implementation
+
+struct RequesterResult {
     source: Url,
     depth: u32,
-    body: String,
+    html_body: String,
+}
+
+struct ParserResult {
+    source: Url,
+    depth: u32,
+    page_content: String,
     discovered_links: Vec<Url>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let client = Client::builder()
-        .user_agent(format!(
-            "Crawler-rs/0.1 (https://github.com/{}/{}",
-            SIGNATURE, REPOSITORY
-        ))
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(30))
-        .build()?;
-
-    let url = Url::parse("https://en.wikipedia.org/wiki/Rust_(programming_language)")?;
-
-    let (requester_tx, mut requester_rx) = mpsc::channel(32); // tasks -> parser
-    let (parser_tx, mut parser_rx) = mpsc::channel(32); // parser -> manager
-    let (manager_tx, mut manager_rx) = mpsc::channel(32); // main -> manager
-    // let (main_tx, mut main_rx) = mpsc::channel(32); // manager -> main
-
-    // defines our first crawl request beforehand
-    let request = CrawlRequest {
-        source: url,
-        depth: 1,
-    };
-    manager_tx.send(request);
-
-    // create the links manager
-    let manager_task = tokio::spawn(async move {
-        // receives links from the parser and spawns new webpage requests
-        crawling_manager(client, parser_rx, requester_tx).await;
-    });
-
-    // create the content parser
-    let parser_task = tokio::spawn(async move {
-        // receives webpages, parses them and sends the results to the manager
-        crawling_parser(requester_rx, parser_tx).await;
-    });
-
-    tokio::join!(manager_task, parser_task);
-
-    Ok(())
+enum ManagerEvent {
+    External(CrawlCommand),
+    Parsed(ParserResult),
 }
 
-fn crawl_request() {}
-
-async fn crawling_manager(
-    client: Client,
-    parser_rx: mpsc::Receiver<u8>,
-    requester_tx: mpsc::Sender<u8>,
-) {
+struct WebCrawler {
+    manager_tx: mpsc::Sender<ManagerEvent>,
+    parser_rx: mpsc::Receiver<RequesterResult>,
 }
 
-async fn crawling_parser(requester_rx: mpsc::Receiver<u8>, tx: mpsc::Sender<u8>) {}
+impl WebCrawler {
+    pub fn new(receiver: mpsc::Sender<CrawlResponse>) -> Self {
+        let (manager_tx, manager_rx) = mpsc::channel(32);
+        let (parser_tx, parser_rx) = mpsc::channel(32);
 
-//---//---//---//---//
+        // spawns the parser
+        tokio::spawn({
+            let manager_tx = manager_tx.clone();
+            async move {
+                // Self::parser_actor(parser_rx, manager_tx);
+            }
+        });
 
-async fn a() {}
+        // spawn the background task, moving the receiver into the async block
+        // tokio::spawn(async move {
+        //     Self::handle_commands(manager_rx, receiver).await;
+        // });
 
-async fn request_webpage_html(url: Url, client: &Client) -> Result<Option<String>, reqwest::Error> {
-    let response = client
-        .get(url)
-        .send() //
-        .await?;
-
-    // extract the content-type header
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|val| val.to_str().ok())
-        .unwrap_or(""); // default to empty if the server didn't send a header
-
-    // if it is not html, return none
-    if !content_type.starts_with("text/html") {
-        return Ok(None);
+        Self {
+            manager_tx: manager_tx,
+            parser_rx: parser_rx,
+        }
     }
 
-    let body = response
-        .text() //
-        .await?;
-
-    Ok(Some(body))
+    pub fn send(&self, command: CrawlCommand) -> Result<(), mpsc::error::SendError<CrawlCommand>> {
+        self.manager_tx
+            .blocking_send(ManagerEvent::External(command))
+            .map_err(|mpsc::error::SendError(failed_command)| {
+                match failed_command {
+                    // extract the original command the user tried to send
+                    ManagerEvent::External(cmd) => mpsc::error::SendError(cmd),
+                    // this function only sends the `External` variant
+                    _ => unreachable!(),
+                }
+            })
+    }
 }
+
+impl WebCrawler {
+    async fn spawn_actors() {
+        //     // create the content parser
+        //     tokio::spawn(async move {
+        //         // receives webpages, parses them and sends the results to the manager
+        //         crawling_parser(requester_rx, parser_tx).await;
+        //     });
+    }
+    //
+    // async fn crawling_parser(requester_rx: mpsc::Receiver<u8>, tx: mpsc::Sender<u8>) {}
+
+    async fn handle_commands(
+        mut manager_rx: mpsc::Receiver<ManagerEvent>,
+        sender: mpsc::Sender<CrawlResponse>,
+    ) {
+        while let Some(command) = manager_rx.recv().await {
+            use CrawlCommand as CC;
+            use ManagerEvent as ME;
+            match command {
+                ME::External(command) => match command {
+                    CC::RequestCrawl(request) => {
+                        // 1. spawns a page requester
+                        tokio::spawn(async move {
+                            // let sender = self.parser_rx.clone();
+                            Self::requester_worker().await;
+                        });
+                    }
+                    CC::Terminate => {
+                        // all channels will be dropped; consequently,
+                        // all tasks using them will terminate.
+                        break;
+                    }
+                },
+                ME::Parsed(parser_result) => {
+                    // 1. sends back the result of a crawled page using the 'sender'
+                    let response = CrawlResponse::Page(parser_result);
+                    if sender.send(response).await.is_err() {
+                        // the external client disconnected without sendind a terminate command.
+                        break;
+                    };
+                }
+            }
+        }
+    }
+
+    async fn requester_worker() {
+        //
+    }
+
+    // WARN: is there a better name for this method?
+    async fn parser_actor(requester_rx: mpsc::Receiver<ManagerEvent>, tx: mpsc::Sender<ManagerEvent>) {
+        //
+    }
+
+    async fn request_webpage_html(
+        url: Url,
+        client: &Client,
+    ) -> Result<Option<String>, reqwest::Error> {
+        let response = client
+            .get(url)
+            .send() //
+            .await?;
+
+        // extract the content-type header
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|val| val.to_str().ok())
+            .unwrap_or(""); // default to empty if the server didn't send a header
+
+        // if it is not html, return none
+        if !content_type.starts_with("text/html") {
+            return Ok(None);
+        }
+
+        let body = response
+            .text() //
+            .await?;
+
+        Ok(Some(body))
+    }
+}
+
+#[tokio::main]
+async fn main() {
+
+}
+
+//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
+// const SIGNATURE: &str = "raydroplet";
+// const REPOSITORY: &str = "crawler-rs";
+//
+// struct CrawlResult {
+//     source: Url,
+//     depth: u32,
+//     body: String,
+//     discovered_links: Vec<Url>,
+// }
+//
+// #[tokio::main]
+// async fn main() -> Result<(), Box<dyn Error>> {
+//     let client = Client::builder()
+//         .user_agent(format!(
+//             "Crawler-rs/0.1 (https://github.com/{}/{}",
+//             SIGNATURE, REPOSITORY
+//         ))
+//         .connect_timeout(Duration::from_secs(5))
+//         .timeout(Duration::from_secs(30))
+//         .build()?;
+//
+//     let url = Url::parse("https://en.wikipedia.org/wiki/Rust_(programming_language)")?;
+//
+//     let (requester_tx, mut requester_rx) = mpsc::channel(32); // tasks -> parser
+//     let (parser_tx, mut parser_rx) = mpsc::channel(32); // parser -> manager
+//     let (manager_tx, mut manager_rx) = mpsc::channel(32); // main -> manager
+//     // let (main_tx, mut main_rx) = mpsc::channel(32); // manager -> main
+//
+//     // defines our first crawl request beforehand
+//     let request = CrawlRequest {
+//         source: url,
+//         depth: 1,
+//     };
+//     manager_tx.send(request);
+//
+//     // create the links manager
+//     let manager_task = tokio::spawn(async move {
+//         // receives links from the parser and spawns new webpage requests
+//         crawling_manager(client, parser_rx, requester_tx).await;
+//     });
+//
+//     // create the content parser
+//     let parser_task = tokio::spawn(async move {
+//         // receives webpages, parses them and sends the results to the manager
+//         crawling_parser(requester_rx, parser_tx).await;
+//     });
+//
+//     let (manager_res, parser_res) = tokio::join!(manager_task, parser_task);
+//
+//     manager_res?;
+//     parser_res?;
+//
+//     Ok(())
+// }
+//
+// fn crawl_request() {}
+//
+// async fn crawling_manager(
+//     client: Client,
+//     parser_rx: mpsc::Receiver<u8>,
+//     requester_tx: mpsc::Sender<u8>,
+// ) {
+// }
 
 //---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
 
