@@ -33,35 +33,76 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let url = Url::parse("https://en.wikipedia.org/wiki/Rust_(programming_language)")?;
 
-    // tasks -> parser
-    let (requester_tx, mut requester_rx) = mpsc::channel(32);
-    // parser -> manager
-    let (parser_tx, mut parser_rx) = mpsc::channel(32);
+    let (requester_tx, mut requester_rx) = mpsc::channel(32); // tasks -> parser
+    let (parser_tx, mut parser_rx) = mpsc::channel(32); // parser -> manager
+    let (manager_tx, mut manager_rx) = mpsc::channel(32); // main -> manager
+    // let (main_tx, mut main_rx) = mpsc::channel(32); // manager -> main
+
+    // defines our first crawl request beforehand
+    let request = CrawlRequest {
+        source: url,
+        depth: 1,
+    };
+    manager_tx.send(request);
 
     // create the links manager
-    tokio::spawn(async move {
-        // receives links and spawns new webpage requests
+    let manager_task = tokio::spawn(async move {
+        // receives links from the parser and spawns new webpage requests
         crawling_manager(client, parser_rx, requester_tx).await;
     });
 
     // create the content parser
-    tokio::spawn(async move {
+    let parser_task = tokio::spawn(async move {
         // receives webpages, parses them and sends the results to the manager
         crawling_parser(requester_rx, parser_tx).await;
     });
 
+    tokio::join!(manager_task, parser_task);
+
     Ok(())
 }
 
-async fn crawling_manager(client: Client, parser_rx: mpsc::Receiver<u8>, requester_tx: mpsc::Sender<u8>) {
+fn crawl_request() {}
+
+async fn crawling_manager(
+    client: Client,
+    parser_rx: mpsc::Receiver<u8>,
+    requester_tx: mpsc::Sender<u8>,
+) {
 }
 
-async fn crawling_parser(requester_rx: mpsc::Receiver<u8>, tx: mpsc::Sender<u8>) {
+async fn crawling_parser(requester_rx: mpsc::Receiver<u8>, tx: mpsc::Sender<u8>) {}
 
+//---//---//---//---//
+
+async fn a() {}
+
+async fn request_webpage_html(url: Url, client: &Client) -> Result<Option<String>, reqwest::Error> {
+    let response = client
+        .get(url)
+        .send() //
+        .await?;
+
+    // extract the content-type header
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|val| val.to_str().ok())
+        .unwrap_or(""); // default to empty if the server didn't send a header
+
+    // if it is not html, return none
+    if !content_type.starts_with("text/html") {
+        return Ok(None);
+    }
+
+    let body = response
+        .text() //
+        .await?;
+
+    Ok(Some(body))
 }
 
 //---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
-
 
 // async fn _crawling_manager(client: Client) {
 //     // TODO: check for deadlocks
@@ -104,31 +145,6 @@ async fn crawling_parser(requester_rx: mpsc::Receiver<u8>, tx: mpsc::Sender<u8>)
 //             println!("The task was canceled!");
 //         }
 //     }
-// }
-//
-// async fn request_webpage_html(url: Url, client: &Client) -> Result<Option<String>, reqwest::Error> {
-//     let response = client
-//         .get(url)
-//         .send() //
-//         .await?;
-//
-//     // extract the content-type header
-//     let content_type = response
-//         .headers()
-//         .get(reqwest::header::CONTENT_TYPE)
-//         .and_then(|val| val.to_str().ok())
-//         .unwrap_or(""); // default to empty if the server didn't send a header
-//
-//     // if it is not html, return none
-//     if !content_type.starts_with("text/html") {
-//         return Ok(None);
-//     }
-//
-//     let body = response
-//         .text() //
-//         .await?;
-//
-//     Ok(Some(body))
 // }
 //
 // fn parse_webpage_links(body: &String, base_url: &Url) -> Result<HashSet<Url>, Box<dyn Error>> {
