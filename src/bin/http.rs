@@ -1,6 +1,6 @@
 use reqwest::{Client, Url};
-// use scraper::{Html, Selector};
-// use std::collections::HashSet;
+use scraper::{Html, Selector};
+use std::collections::HashSet;
 use std::error::Error;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -44,7 +44,7 @@ struct ParserResult {
 enum ManagerEvent {
     Parsed(ParserResult),
     // NOTE: alike command and events, errors should be sent from it's own channel, but I will avoid this for now
-    RequesterError(CrawlRequest, reqwest::Error),
+    // RequesterError(CrawlRequest, reqwest::Error),
 }
 
 struct WebCrawler {
@@ -120,9 +120,8 @@ impl WebCrawler {
                             tokio::spawn({
                                 let sender = parser_tx.clone();
                                 let client = client.clone();
-                                let blamer = manager_tx.clone();
                                 async move {
-                                    Self::requester_worker(request, sender, client, blamer).await;
+                                    Self::requester_worker(request, sender, client).await;
                                 }
                             });
                         }
@@ -143,9 +142,6 @@ impl WebCrawler {
                                 break;
                             };
                         }
-                        ManagerEvent::RequesterError(request, error) => {
-                            //
-                        }
                     }
                 }
             }
@@ -156,19 +152,29 @@ impl WebCrawler {
         request: CrawlRequest,
         sender: mpsc::Sender<RequesterResult>,
         client: reqwest::Client,
-        blamer: mpsc::Sender<ManagerEvent>,
     ) {
         let CrawlRequest { source, depth } = request;
 
-        match Self::request_webpage_html(source, client).await {
-            Ok(Some(value)) => {
-                // happy path
+        match Self::request_webpage_html(source.clone(), client).await {
+            Ok(Some(body)) => {
+                // happy path: sends the page body to the parser
+                let result = RequesterResult {
+                    source: source,
+                    depth: depth,
+                    html_body: body,
+                };
+                if sender.send(result).await.is_err() {
+                    // no parser to hear us, silently return.
+                    return;
+                }
             }
             Ok(None) => {
-                // fail 1
+                // not html, we can safely ignore this page
+                return;
             }
-            Err(err) => {
-                // fail 2
+            Err(_err) => {
+                // NOTE: for now it's just fire and forget
+                return;
             }
         };
     }
@@ -178,7 +184,8 @@ impl WebCrawler {
         parser_rx: mpsc::Receiver<RequesterResult>,
         manager_tx: mpsc::Sender<ManagerEvent>,
     ) {
-        //
+        // TODO:
+        // Self::parse_webpage_html().await;
     }
 
     async fn request_webpage_html(
@@ -207,6 +214,35 @@ impl WebCrawler {
             .await?;
 
         Ok(Some(body))
+    }
+
+    async fn parse_webpage_html(request: RequesterResult) {
+        let RequesterResult { source, depth, html_body } = request;
+
+        let document = Html::parse_document(&html_body); // builds a DOM from the raw text
+        let Ok(selector) = Selector::parse("a[href]") else {
+            // NOTE: for now it's just fire and forget
+            return;
+        };
+        let mut extracted_urls = HashSet::new();
+
+        for element in document.select(&selector) {
+            // extracts the actual text inside the href attribute
+            if let Some(href) = element.value().attr("href") {
+                //
+                if let Ok(mut absolute_url) = source.join(href) {
+                    // remove headers (page.com/article#header -> page.com/article)
+                    absolute_url.set_fragment(None);
+                    // remove query parameters (?action=edit)
+                    // NOTE: this filters some valid links (like youtube.com/watch?v=video_id)
+                    absolute_url.set_query(None);
+                    //
+                    extracted_urls.insert(absolute_url);
+                }
+            }
+        }
+
+        // sends the result to the manager
     }
 }
 
