@@ -1,10 +1,6 @@
-struct CrawlRequest {
+struct CrawlRequest {}
 
-}
-
-struct CrawlerEngine {
-
-}
+struct CrawlerEngine {}
 
 type CrawlID = u64;
 
@@ -15,13 +11,8 @@ enum EngineCommand {
 
 impl CrawlerEngine {
     pub fn new() -> Self {
-        Self{
-
-        }
+        Self {}
     }
 
-    pub fn handle_command(command: EngineCommand) {
-
-    }
+    pub fn handle_command(command: EngineCommand) {}
 }
-

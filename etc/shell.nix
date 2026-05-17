@@ -12,7 +12,7 @@ pkgs.mkShell {
   buildInputs = with pkgs; [
     wayland
     libxkbcommon
-    rust-bin.stable."1.93.0".default
+    (rust-bin.stable."1.93.0".default.override { extensions = [ "rust-src" ]; })
     clang
     lld
     pkg-config

@@ -1,6 +1,6 @@
 use reqwest::{Client, Url};
-use scraper::{Html, Selector};
-use std::collections::HashSet;
+// use scraper::{Html, Selector};
+// use std::collections::HashSet;
 use std::error::Error;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -25,6 +25,9 @@ pub enum CrawlResponse {
 //---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
 // (mostly) interal implementation
 
+const SIGNATURE: &str = "raydroplet";
+const REPOSITORY: &str = "crawler-rs";
+
 struct RequesterResult {
     source: Url,
     depth: u32,
@@ -39,110 +42,148 @@ struct ParserResult {
 }
 
 enum ManagerEvent {
-    External(CrawlCommand),
     Parsed(ParserResult),
+    // NOTE: alike command and events, errors should be sent from it's own channel, but I will avoid this for now
+    RequesterError(CrawlRequest, reqwest::Error),
 }
 
 struct WebCrawler {
-    manager_tx: mpsc::Sender<ManagerEvent>,
-    parser_rx: mpsc::Receiver<RequesterResult>,
+    manager_command_tx: mpsc::Sender<CrawlCommand>,
 }
 
 impl WebCrawler {
-    pub fn new(receiver: mpsc::Sender<CrawlResponse>) -> Self {
-        let (manager_tx, manager_rx) = mpsc::channel(32);
+    pub fn new(sender: mpsc::Sender<CrawlResponse>) -> Result<Self, reqwest::Error> {
+        //--- client initialization ---//
+        let client = Client::builder()
+            .user_agent(format!(
+                "Crawler-rs/0.1 (https://github.com/{}/{}",
+                SIGNATURE, REPOSITORY
+            ))
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(30))
+            .build()?; // may fail early
+
+        //--- tasks configuration and wiring ---//
+        let (manager_event_tx, manager_event_rx) = mpsc::channel(32);
+        let (manager_command_tx, manager_command_rx) = mpsc::channel(32);
         let (parser_tx, parser_rx) = mpsc::channel(32);
 
         // spawns the parser
         tokio::spawn({
-            let manager_tx = manager_tx.clone();
+            let manager_tx = manager_event_tx.clone();
             async move {
-                // Self::parser_actor(parser_rx, manager_tx);
+                Self::parser_actor(parser_rx, manager_tx).await;
             }
         });
 
-        // spawn the background task, moving the receiver into the async block
-        // tokio::spawn(async move {
-        //     Self::handle_commands(manager_rx, receiver).await;
-        // });
+        // spawns the command/event manager
+        tokio::spawn({
+            let manager_tx = manager_event_tx.clone();
+            async move {
+                Self::manager_actor(
+                    manager_command_rx,
+                    manager_event_rx,
+                    parser_tx,
+                    sender,
+                    client,
+                    manager_tx,
+                )
+                .await;
+            }
+        });
 
-        Self {
-            manager_tx: manager_tx,
-            parser_rx: parser_rx,
-        }
+        //--- instantiation ---//
+        Ok(Self {
+            manager_command_tx: manager_command_tx,
+        })
     }
 
     pub fn send(&self, command: CrawlCommand) -> Result<(), mpsc::error::SendError<CrawlCommand>> {
-        self.manager_tx
-            .blocking_send(ManagerEvent::External(command))
-            .map_err(|mpsc::error::SendError(failed_command)| {
-                match failed_command {
-                    // extract the original command the user tried to send
-                    ManagerEvent::External(cmd) => mpsc::error::SendError(cmd),
-                    // this function only sends the `External` variant
-                    _ => unreachable!(),
-                }
-            })
+        self.manager_command_tx.blocking_send(command)
     }
-}
 
-impl WebCrawler {
-    async fn spawn_actors() {
-        //     // create the content parser
-        //     tokio::spawn(async move {
-        //         // receives webpages, parses them and sends the results to the manager
-        //         crawling_parser(requester_rx, parser_tx).await;
-        //     });
-    }
-    //
-    // async fn crawling_parser(requester_rx: mpsc::Receiver<u8>, tx: mpsc::Sender<u8>) {}
-
-    async fn handle_commands(
-        mut manager_rx: mpsc::Receiver<ManagerEvent>,
+    async fn manager_actor(
+        mut command_rx: mpsc::Receiver<CrawlCommand>,
+        mut event_rx: mpsc::Receiver<ManagerEvent>,
+        parser_tx: mpsc::Sender<RequesterResult>,
         sender: mpsc::Sender<CrawlResponse>,
+        client: reqwest::Client,
+        manager_tx: mpsc::Sender<ManagerEvent>,
     ) {
-        while let Some(command) = manager_rx.recv().await {
-            use CrawlCommand as CC;
-            use ManagerEvent as ME;
-            match command {
-                ME::External(command) => match command {
-                    CC::RequestCrawl(request) => {
-                        // 1. spawns a page requester
-                        tokio::spawn(async move {
-                            // let sender = self.parser_rx.clone();
-                            Self::requester_worker().await;
-                        });
+        //--- handle commands ---//
+        loop {
+            tokio::select! {
+                Some(command) = command_rx.recv() => {
+                    match command {
+                        CrawlCommand::RequestCrawl(request) => {
+                            // 1. spawns a page requester
+                            tokio::spawn({
+                                let sender = parser_tx.clone();
+                                let client = client.clone();
+                                let blamer = manager_tx.clone();
+                                async move {
+                                    Self::requester_worker(request, sender, client, blamer).await;
+                                }
+                            });
+                        }
+                        CrawlCommand::Terminate => {
+                            // all channels will be dropped; consequently,
+                            // all tasks using them will terminate.
+                            break;
+                        }
                     }
-                    CC::Terminate => {
-                        // all channels will be dropped; consequently,
-                        // all tasks using them will terminate.
-                        break;
+                }
+                Some(event) = event_rx.recv() => {
+                    match event {
+                        ManagerEvent::Parsed(parser_result) => {
+                            // 1. sends back the result of a crawled page using the 'sender'
+                            let response = CrawlResponse::Page(parser_result);
+                            if sender.send(response).await.is_err() {
+                                // the external client disconnected without sendind a terminate command.
+                                break;
+                            };
+                        }
+                        ManagerEvent::RequesterError(request, error) => {
+                            //
+                        }
                     }
-                },
-                ME::Parsed(parser_result) => {
-                    // 1. sends back the result of a crawled page using the 'sender'
-                    let response = CrawlResponse::Page(parser_result);
-                    if sender.send(response).await.is_err() {
-                        // the external client disconnected without sendind a terminate command.
-                        break;
-                    };
                 }
             }
         }
     }
 
-    async fn requester_worker() {
-        //
+    async fn requester_worker(
+        request: CrawlRequest,
+        sender: mpsc::Sender<RequesterResult>,
+        client: reqwest::Client,
+        blamer: mpsc::Sender<ManagerEvent>,
+    ) {
+        let CrawlRequest { source, depth } = request;
+
+        match Self::request_webpage_html(source, client).await {
+            Ok(Some(value)) => {
+                // happy path
+            }
+            Ok(None) => {
+                // fail 1
+            }
+            Err(err) => {
+                // fail 2
+            }
+        };
     }
 
     // WARN: is there a better name for this method?
-    async fn parser_actor(requester_rx: mpsc::Receiver<ManagerEvent>, tx: mpsc::Sender<ManagerEvent>) {
+    async fn parser_actor(
+        parser_rx: mpsc::Receiver<RequesterResult>,
+        manager_tx: mpsc::Sender<ManagerEvent>,
+    ) {
         //
     }
 
     async fn request_webpage_html(
         url: Url,
-        client: &Client,
+        client: Client,
     ) -> Result<Option<String>, reqwest::Error> {
         let response = client
             .get(url)
@@ -171,7 +212,15 @@ impl WebCrawler {
 
 #[tokio::main]
 async fn main() {
+    let (tx, mut _rx) = mpsc::channel(32);
+    let crawler = WebCrawler::new(tx);
 
+    let request = CrawlRequest {
+        source: Url::parse("https://example.net").expect(""),
+        depth: 0,
+    };
+    // let _ = crawler.send(CrawlCommand::RequestCrawl(request));
+    // let _ = crawler.send(CrawlCommand::Terminate);
 }
 
 //---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//

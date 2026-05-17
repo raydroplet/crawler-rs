@@ -1,4 +1,4 @@
-use crate::gui::{EguiView};
+use crate::gui::EguiView;
 
 pub struct App {
     view: EguiView,
@@ -7,8 +7,7 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         Self {
-            view: EguiView::new()
-            //
+            view: EguiView::new(), //
         }
     }
 
