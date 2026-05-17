@@ -3,9 +3,22 @@ use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::error::Error;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 const SIGNATURE: &str = "raydroplet";
 const REPOSITORY: &str = "crawler-rs";
+
+struct CrawlRequest {
+    source: Url,
+    depth: u32,
+}
+
+struct CrawlResult {
+    source: Url,
+    depth: u32,
+    body: String,
+    discovered_links: Vec<Url>,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -19,69 +32,166 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .build()?;
 
     let url = Url::parse("https://en.wikipedia.org/wiki/Rust_(programming_language)")?;
-    let mut links: Vec<Url> = Vec::new();
 
-    if let Some(body) = request_webpage(url.clone(), &client).await? {
-        links.extend(parse_webpage_links(&body, &url)?.into_iter());
-    }
+    // tasks -> parser
+    let (requester_tx, mut requester_rx) = mpsc::channel(32);
+    // parser -> manager
+    let (parser_tx, mut parser_rx) = mpsc::channel(32);
 
-    println!("Found:");
-    for link in links {
-        println!("  -> {}", link);
-    }
+    // create the links manager
+    tokio::spawn(async move {
+        // receives links and spawns new webpage requests
+        crawling_manager(client, parser_rx, requester_tx).await;
+    });
+
+    // create the content parser
+    tokio::spawn(async move {
+        // receives webpages, parses them and sends the results to the manager
+        crawling_parser(requester_rx, parser_tx).await;
+    });
 
     Ok(())
 }
 
-async fn request_webpage(url: Url, client: &Client) -> Result<Option<String>, reqwest::Error> {
-    let response = client
-        .get(url)
-        .send() //
-        .await?;
-
-    // extract the content-type header
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|val| val.to_str().ok())
-        .unwrap_or(""); // default to empty if the server didn't send a header
-
-    // if it is not html, return none
-    if !content_type.starts_with("text/html") {
-        return Ok(None);
-    }
-
-    let body = response
-        .text() //
-        .await?;
-
-    Ok(Some(body))
+async fn crawling_manager(client: Client, parser_rx: mpsc::Receiver<u8>, requester_tx: mpsc::Sender<u8>) {
 }
 
-fn parse_webpage_links(body: &String, base_url: &Url) -> Result<HashSet<Url>, Box<dyn Error>> {
-    let document = Html::parse_document(body); // builds a DOM from the raw text
-    let selector = Selector::parse("a[href]")?;
-    let mut extracted_urls = HashSet::new();
+async fn crawling_parser(requester_rx: mpsc::Receiver<u8>, tx: mpsc::Sender<u8>) {
 
-    for element in document.select(&selector) {
-        // extracts the actual text inside the href attribute
-        if let Some(href) = element.value().attr("href") {
-            //
-            if let Ok(mut absolute_url) = base_url.join(href) {
-                // remove headers (page.com/article#header -> page.com/article)
-                absolute_url.set_fragment(None);
-                // remove query parameters (?action=edit)
-                // NOTE: this filters some valid links (like youtube.com/watch?v=video_id)
-                absolute_url.set_query(None);
-
-                //
-                extracted_urls.insert(absolute_url);
-            }
-        }
-    }
-
-    Ok(extracted_urls)
 }
+
+//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
+
+
+// async fn _crawling_manager(client: Client) {
+//     // TODO: check for deadlocks
+//     let manager = tokio::spawn(async move {
+//         let root_url: Url = Url::parse("https://wikipedia.com").expect("");
+//         let mut crawled_pages: HashSet<Url> = HashSet::new();
+//         let (transmitter, mut receiver) = mpsc::channel(32);
+//
+//         // sends the root url
+//         let _ = transmitter.send(HashSet::from([root_url.clone()])).await;
+//
+//         let task_client = client.clone();
+//         let task_trasmitter = transmitter.clone();
+//         let task_url = root_url.clone();
+//         let task_worker = tokio::spawn(async move {
+//             let Ok(request_response) = request_webpage_html(task_url, &task_client).await else {
+//                 return; // in case of error we just end the task
+//             };
+//
+//             let Some(body) = request_response else {
+//                 return; // likely not html
+//             };
+//
+//             // NOTE: the only possible error is for the receiver to be closed.
+//             // let _ = task_trasmitter.send(links);
+//         });
+//
+//         while let Some(message) = receiver.recv().await {
+//
+//             //
+//         }
+//     });
+//
+//     // TODO: clean this up
+//     if let Err(join_err) = manager.await {
+//         // task panicked or was canceled
+//         if join_err.is_panic() {
+//             println!("The task panicked!");
+//         } else {
+//             println!("The task was canceled!");
+//         }
+//     }
+// }
+//
+// async fn request_webpage_html(url: Url, client: &Client) -> Result<Option<String>, reqwest::Error> {
+//     let response = client
+//         .get(url)
+//         .send() //
+//         .await?;
+//
+//     // extract the content-type header
+//     let content_type = response
+//         .headers()
+//         .get(reqwest::header::CONTENT_TYPE)
+//         .and_then(|val| val.to_str().ok())
+//         .unwrap_or(""); // default to empty if the server didn't send a header
+//
+//     // if it is not html, return none
+//     if !content_type.starts_with("text/html") {
+//         return Ok(None);
+//     }
+//
+//     let body = response
+//         .text() //
+//         .await?;
+//
+//     Ok(Some(body))
+// }
+//
+// fn parse_webpage_links(body: &String, base_url: &Url) -> Result<HashSet<Url>, Box<dyn Error>> {
+//     let document = Html::parse_document(body); // builds a DOM from the raw text
+//     let selector = Selector::parse("a[href]")?;
+//     let mut extracted_urls = HashSet::new();
+//
+//     for element in document.select(&selector) {
+//         // extracts the actual text inside the href attribute
+//         if let Some(href) = element.value().attr("href") {
+//             //
+//             if let Ok(mut absolute_url) = base_url.join(href) {
+//                 // remove headers (page.com/article#header -> page.com/article)
+//                 absolute_url.set_fragment(None);
+//                 // remove query parameters (?action=edit)
+//                 // NOTE: this filters some valid links (like youtube.com/watch?v=video_id)
+//                 absolute_url.set_query(None);
+//                 //
+//                 extracted_urls.insert(absolute_url);
+//             }
+//         }
+//     }
+//
+//     Ok(extracted_urls)
+// }
+
+// #[tokio::main]
+// async fn main() -> Result<(), Box<dyn Error>> {
+//     let client = Client::builder()
+//         .user_agent(format!(
+//             "Crawler-rs/0.1 (https://github.com/{}/{}",
+//             SIGNATURE, REPOSITORY
+//         ))
+//         .connect_timeout(Duration::from_secs(5))
+//         .timeout(Duration::from_secs(30))
+//         .build()?;
+//
+//     let url = Url::parse("https://en.wikipedia.org/wiki/Rust_(programming_language)")?;
+//     let mut links: HashSet<Url> = HashSet::new();
+//
+//     // workers:
+//     // 1. spawn a tokio task with a root link to execute request_webpage
+//     // 2. send all the found links into a channel
+//     // 3. end the task
+//
+//     // manager:
+//     // 1. awaits for any incoming links in the channel
+//     // 3. keeps track of invalid websites that return 505 or some other error
+//     // 4. filters the undesired links
+//     // 5. adds the remaining ones to it's "database"
+//     // 6. fire new workers for every of those newly found links, respecting the crawl depth
+//
+//     if let Some(body) = request_webpage_html(url.clone(), &client).await? {
+//         links.extend(parse_webpage_links(&body, &url)?);
+//     }
+//
+//     println!("Found:");
+//     for link in links {
+//         println!("  -> {}", link);
+//     }
+//
+//     Ok(())
+// }
 
 // NOTE: realized i'm overcomplicating things for now
 //
@@ -162,7 +272,6 @@ fn parse_webpage_links(body: &String, base_url: &Url) -> Result<HashSet<Url>, Bo
 //
 //     Ok(extracted_urls)
 // }
-
 
 // TODO:
 // 1. [-] create a reqwest client and pass it for tasks to use
