@@ -2,23 +2,24 @@ use reqwest::{Client, Url};
 use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::error::Error;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc, oneshot};
 
 //---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
 // what the external world sees
 
 struct CrawlRequest {
     source: Url,
-    depth: u32,
+    depth: i32,
 }
 
-pub enum CrawlCommand {
+enum CrawlCommand {
     RequestCrawl(CrawlRequest), // starts a crawl of a defined depth
     Terminate,
 }
 
-pub enum CrawlResponse {
+enum CrawlResponse {
     Page(ParserResult), // occasionally returns the result of a single page crawl
 }
 
@@ -30,15 +31,15 @@ const REPOSITORY: &str = "crawler-rs";
 
 struct RequesterResult {
     source: Url,
-    depth: u32,
+    depth: i32,
     html_body: String,
 }
 
 struct ParserResult {
     source: Url,
-    depth: u32,
+    depth: i32,
     page_content: String,
-    discovered_links: Vec<Url>,
+    discovered_links: HashSet<Url>,
 }
 
 enum ManagerEvent {
@@ -64,9 +65,9 @@ impl WebCrawler {
             .build()?; // may fail early
 
         //--- tasks configuration and wiring ---//
-        let (manager_event_tx, manager_event_rx) = mpsc::channel(32);
-        let (manager_command_tx, manager_command_rx) = mpsc::channel(32);
-        let (parser_tx, parser_rx) = mpsc::channel(32);
+        let (manager_event_tx, manager_event_rx) = mpsc::channel(1024);
+        let (manager_command_tx, manager_command_rx) = mpsc::channel(1024);
+        let (parser_tx, parser_rx) = mpsc::channel(1024);
 
         // spawns the parser
         tokio::spawn({
@@ -77,19 +78,15 @@ impl WebCrawler {
         });
 
         // spawns the command/event manager
-        tokio::spawn({
-            let manager_tx = manager_event_tx.clone();
-            async move {
-                Self::manager_actor(
-                    manager_command_rx,
-                    manager_event_rx,
-                    parser_tx,
-                    sender,
-                    client,
-                    manager_tx,
-                )
-                .await;
-            }
+        tokio::spawn(async move {
+            Self::manager_actor(
+                manager_command_rx,
+                manager_event_rx,
+                parser_tx,
+                sender,
+                client,
+            )
+            .await;
         });
 
         //--- instantiation ---//
@@ -98,7 +95,10 @@ impl WebCrawler {
         })
     }
 
-    pub fn send(&self, command: CrawlCommand) -> Result<(), mpsc::error::SendError<CrawlCommand>> {
+    pub fn send_blocking(
+        &self,
+        command: CrawlCommand,
+    ) -> Result<(), mpsc::error::SendError<CrawlCommand>> {
         self.manager_command_tx.blocking_send(command)
     }
 
@@ -108,20 +108,41 @@ impl WebCrawler {
         parser_tx: mpsc::Sender<RequesterResult>,
         sender: mpsc::Sender<CrawlResponse>,
         client: reqwest::Client,
-        manager_tx: mpsc::Sender<ManagerEvent>,
     ) {
         //--- handle commands ---//
+        let mut visited = HashSet::new();
+        // we allow 2 simultaneous network requests
+        // the parsing is unbounded tho.
+        let max_requesters = Arc::new(Semaphore::new(4));
+
         loop {
             tokio::select! {
-                Some(command) = command_rx.recv() => {
+                cmd_opt = command_rx.recv() => {
+                    let Some(command) = cmd_opt else {
+                        // channel closed. break the loop.
+                        break;
+                    };
+
                     match command {
                         CrawlCommand::RequestCrawl(request) => {
-                            // 1. spawns a page requester
+                            // 1. depth check
+                            if request.depth < 0 {
+                                continue;
+                            }
+
+                            // 2. tracking crawls
+                            if !visited.insert(request.source.clone()) {
+                                // we already visited this page
+                                continue;
+                            }
+
+                            // 3. spawns a page requester
                             tokio::spawn({
+                                let permit = max_requesters.clone();
                                 let sender = parser_tx.clone();
                                 let client = client.clone();
                                 async move {
-                                    Self::requester_worker(request, sender, client).await;
+                                    Self::requester_worker(permit, request, sender, client).await;
                                 }
                             });
                         }
@@ -132,10 +153,39 @@ impl WebCrawler {
                         }
                     }
                 }
-                Some(event) = event_rx.recv() => {
+                event_opt = event_rx.recv() => {
+                    let Some(event) = event_opt else {
+                        // channel closed. break the loop.
+                        break;
+                    };
+
                     match event {
                         ManagerEvent::Parsed(parser_result) => {
-                            // 1. sends back the result of a crawled page using the 'sender'
+                            // 1. depth check + spawn new crawls for the discovered links
+                            let new_depth = parser_result.depth - 1;
+                            if new_depth >= 0 {
+                                for link in &parser_result.discovered_links {
+                                    if !visited.insert(link.clone()) {
+                                        // we already visited this page
+                                        continue;
+                                    }
+
+                                    tokio::spawn({
+                                        let permit = max_requesters.clone();
+                                        let sender = parser_tx.clone();
+                                        let client = client.clone();
+                                        let request  = CrawlRequest {
+                                            source: link.clone(),
+                                            depth: new_depth,
+                                        };
+                                        async move {
+                                            Self::requester_worker(permit, request, sender, client).await;
+                                        }
+                                    });
+                                }
+                            }
+
+                            // 2. sends back the result of a crawled page using the 'sender'
                             let response = CrawlResponse::Page(parser_result);
                             if sender.send(response).await.is_err() {
                                 // the external client disconnected without sendind a terminate command.
@@ -149,14 +199,23 @@ impl WebCrawler {
     }
 
     async fn requester_worker(
+        permit: Arc<Semaphore>,
         request: CrawlRequest,
         sender: mpsc::Sender<RequesterResult>,
         client: reqwest::Client,
     ) {
+        println!("Spawn request worker: {}", request.source);
+
+        let Ok(_) = permit.acquire_owned().await else {
+            // the semaphore is closed
+            return;
+        };
+
         let CrawlRequest { source, depth } = request;
 
         match Self::request_webpage_html(source.clone(), client).await {
             Ok(Some(body)) => {
+                println!("crawled: {}", source);
                 // happy path: sends the page body to the parser
                 let result = RequesterResult {
                     source: source,
@@ -169,10 +228,12 @@ impl WebCrawler {
                 }
             }
             Ok(None) => {
+                println!("not html: {}", source);
                 // not html, we can safely ignore this page
                 return;
             }
-            Err(_err) => {
+            Err(err) => {
+                println!("Network error for {}: {:?}", source, err);
                 // NOTE: for now it's just fire and forget
                 return;
             }
@@ -181,11 +242,41 @@ impl WebCrawler {
 
     // WARN: is there a better name for this method?
     async fn parser_actor(
-        parser_rx: mpsc::Receiver<RequesterResult>,
+        mut parser_rx: mpsc::Receiver<RequesterResult>,
         manager_tx: mpsc::Sender<ManagerEvent>,
     ) {
-        // TODO:
-        // Self::parse_webpage_html().await;
+        while let Some(request_result) = parser_rx.recv().await {
+            println!("Parsing: {}", request_result.source);
+
+            let manager_tx = manager_tx.clone();
+            let (tx, rx) = oneshot::channel();
+
+            // spawns the rayon worker and goes back to listening request_result's;
+            rayon::spawn(move || {
+                println!("Spawn parser acdor: {}", request_result.source);
+                let urls: HashSet<Url> = Self::parse_webpage_html(&request_result);
+                let result = ParserResult {
+                    source: request_result.source,
+                    depth: request_result.depth,
+                    page_content: request_result.html_body,
+                    discovered_links: urls,
+                };
+                let _ = tx.send(result);
+            });
+
+            tokio::spawn(async move {
+                if let Ok(result) = rx.await {
+                    if manager_tx
+                        .send(ManagerEvent::Parsed(result))
+                        .await //
+                        .is_err()
+                    {
+                        // no manager to hear our pleas, end the task
+                        return;
+                    };
+                }
+            });
+        }
     }
 
     async fn request_webpage_html(
@@ -216,13 +307,17 @@ impl WebCrawler {
         Ok(Some(body))
     }
 
-    async fn parse_webpage_html(request: RequesterResult) {
-        let RequesterResult { source, depth, html_body } = request;
+    fn parse_webpage_html(request: &RequesterResult) -> HashSet<Url> {
+        let RequesterResult {
+            source,
+            depth: _,
+            html_body,
+        } = request;
 
         let document = Html::parse_document(&html_body); // builds a DOM from the raw text
         let Ok(selector) = Selector::parse("a[href]") else {
             // NOTE: for now it's just fire and forget
-            return;
+            return HashSet::new();
         };
         let mut extracted_urls = HashSet::new();
 
@@ -242,274 +337,75 @@ impl WebCrawler {
             }
         }
 
-        // sends the result to the manager
+        extracted_urls
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let (tx, mut _rx) = mpsc::channel(32);
-    let crawler = WebCrawler::new(tx);
+    let (tx, mut rx) = mpsc::channel(1024);
+
+    // 1. Wrap the crawler in an Arc so we can share ownership
+    let crawler = Arc::new(WebCrawler::new(tx).expect("Failed to initialize crawler"));
 
     let request = CrawlRequest {
-        source: Url::parse("https://example.net").expect(""),
-        depth: 0,
+        source: Url::parse("https://example.com").expect("Invalid URL"),
+        depth: 2,
     };
-    // let _ = crawler.send(CrawlCommand::RequestCrawl(request));
-    // let _ = crawler.send(CrawlCommand::Terminate);
+
+    // 2. Clone the Arc pointer (this does not clone the crawler itself)
+    let crawler_clone = crawler.clone();
+
+    // 3. Move the clone into the blocking task
+    tokio::task::spawn_blocking(move || {
+        if crawler_clone
+            .send_blocking(CrawlCommand::RequestCrawl(request))
+            .is_err()
+        {
+            println!("Failed to send initial request.");
+        }
+    });
+
+    println!("Crawler started. Waiting for results...\n");
+
+    let timeout_duration = Duration::from_secs(10);
+
+    loop {
+        match tokio::time::timeout(timeout_duration, rx.recv()).await {
+            Ok(Some(response)) => {
+                match response {
+                    CrawlResponse::Page(parser_result) => {
+                        println!("========================================");
+                        println!("Source URL  : {}", parser_result.source);
+                        println!("Depth Left  : {}", parser_result.depth);
+                        println!("HTML Size   : {} bytes", parser_result.page_content.len());
+                        println!("Links Found : {}", parser_result.discovered_links.len());
+                        println!("--- Links ---");
+
+                        for link in parser_result.discovered_links {
+                            println!(" -> {}", link);
+                        }
+                    }
+                }
+            }
+            Ok(None) => {
+                println!("Crawler finished processing all links.");
+                break;
+            }
+            Err(_) => {
+                println!(
+                    "\nNo new pages crawled for {} seconds. Timing out and shutting down.",
+                    timeout_duration.as_secs()
+                );
+                break;
+            }
+        }
+    }
+
+    // 4. Ensure the original crawler lives until the end of main
+    drop(crawler);
+    println!("Ending.\n");
 }
-
-//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
-// const SIGNATURE: &str = "raydroplet";
-// const REPOSITORY: &str = "crawler-rs";
-//
-// struct CrawlResult {
-//     source: Url,
-//     depth: u32,
-//     body: String,
-//     discovered_links: Vec<Url>,
-// }
-//
-// #[tokio::main]
-// async fn main() -> Result<(), Box<dyn Error>> {
-//     let client = Client::builder()
-//         .user_agent(format!(
-//             "Crawler-rs/0.1 (https://github.com/{}/{}",
-//             SIGNATURE, REPOSITORY
-//         ))
-//         .connect_timeout(Duration::from_secs(5))
-//         .timeout(Duration::from_secs(30))
-//         .build()?;
-//
-//     let url = Url::parse("https://en.wikipedia.org/wiki/Rust_(programming_language)")?;
-//
-//     let (requester_tx, mut requester_rx) = mpsc::channel(32); // tasks -> parser
-//     let (parser_tx, mut parser_rx) = mpsc::channel(32); // parser -> manager
-//     let (manager_tx, mut manager_rx) = mpsc::channel(32); // main -> manager
-//     // let (main_tx, mut main_rx) = mpsc::channel(32); // manager -> main
-//
-//     // defines our first crawl request beforehand
-//     let request = CrawlRequest {
-//         source: url,
-//         depth: 1,
-//     };
-//     manager_tx.send(request);
-//
-//     // create the links manager
-//     let manager_task = tokio::spawn(async move {
-//         // receives links from the parser and spawns new webpage requests
-//         crawling_manager(client, parser_rx, requester_tx).await;
-//     });
-//
-//     // create the content parser
-//     let parser_task = tokio::spawn(async move {
-//         // receives webpages, parses them and sends the results to the manager
-//         crawling_parser(requester_rx, parser_tx).await;
-//     });
-//
-//     let (manager_res, parser_res) = tokio::join!(manager_task, parser_task);
-//
-//     manager_res?;
-//     parser_res?;
-//
-//     Ok(())
-// }
-//
-// fn crawl_request() {}
-//
-// async fn crawling_manager(
-//     client: Client,
-//     parser_rx: mpsc::Receiver<u8>,
-//     requester_tx: mpsc::Sender<u8>,
-// ) {
-// }
-
-//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
-
-// async fn _crawling_manager(client: Client) {
-//     // TODO: check for deadlocks
-//     let manager = tokio::spawn(async move {
-//         let root_url: Url = Url::parse("https://wikipedia.com").expect("");
-//         let mut crawled_pages: HashSet<Url> = HashSet::new();
-//         let (transmitter, mut receiver) = mpsc::channel(32);
-//
-//         // sends the root url
-//         let _ = transmitter.send(HashSet::from([root_url.clone()])).await;
-//
-//         let task_client = client.clone();
-//         let task_trasmitter = transmitter.clone();
-//         let task_url = root_url.clone();
-//         let task_worker = tokio::spawn(async move {
-//             let Ok(request_response) = request_webpage_html(task_url, &task_client).await else {
-//                 return; // in case of error we just end the task
-//             };
-//
-//             let Some(body) = request_response else {
-//                 return; // likely not html
-//             };
-//
-//             // NOTE: the only possible error is for the receiver to be closed.
-//             // let _ = task_trasmitter.send(links);
-//         });
-//
-//         while let Some(message) = receiver.recv().await {
-//
-//             //
-//         }
-//     });
-//
-//     // TODO: clean this up
-//     if let Err(join_err) = manager.await {
-//         // task panicked or was canceled
-//         if join_err.is_panic() {
-//             println!("The task panicked!");
-//         } else {
-//             println!("The task was canceled!");
-//         }
-//     }
-// }
-//
-// fn parse_webpage_links(body: &String, base_url: &Url) -> Result<HashSet<Url>, Box<dyn Error>> {
-//     let document = Html::parse_document(body); // builds a DOM from the raw text
-//     let selector = Selector::parse("a[href]")?;
-//     let mut extracted_urls = HashSet::new();
-//
-//     for element in document.select(&selector) {
-//         // extracts the actual text inside the href attribute
-//         if let Some(href) = element.value().attr("href") {
-//             //
-//             if let Ok(mut absolute_url) = base_url.join(href) {
-//                 // remove headers (page.com/article#header -> page.com/article)
-//                 absolute_url.set_fragment(None);
-//                 // remove query parameters (?action=edit)
-//                 // NOTE: this filters some valid links (like youtube.com/watch?v=video_id)
-//                 absolute_url.set_query(None);
-//                 //
-//                 extracted_urls.insert(absolute_url);
-//             }
-//         }
-//     }
-//
-//     Ok(extracted_urls)
-// }
-
-// #[tokio::main]
-// async fn main() -> Result<(), Box<dyn Error>> {
-//     let client = Client::builder()
-//         .user_agent(format!(
-//             "Crawler-rs/0.1 (https://github.com/{}/{}",
-//             SIGNATURE, REPOSITORY
-//         ))
-//         .connect_timeout(Duration::from_secs(5))
-//         .timeout(Duration::from_secs(30))
-//         .build()?;
-//
-//     let url = Url::parse("https://en.wikipedia.org/wiki/Rust_(programming_language)")?;
-//     let mut links: HashSet<Url> = HashSet::new();
-//
-//     // workers:
-//     // 1. spawn a tokio task with a root link to execute request_webpage
-//     // 2. send all the found links into a channel
-//     // 3. end the task
-//
-//     // manager:
-//     // 1. awaits for any incoming links in the channel
-//     // 3. keeps track of invalid websites that return 505 or some other error
-//     // 4. filters the undesired links
-//     // 5. adds the remaining ones to it's "database"
-//     // 6. fire new workers for every of those newly found links, respecting the crawl depth
-//
-//     if let Some(body) = request_webpage_html(url.clone(), &client).await? {
-//         links.extend(parse_webpage_links(&body, &url)?);
-//     }
-//
-//     println!("Found:");
-//     for link in links {
-//         println!("  -> {}", link);
-//     }
-//
-//     Ok(())
-// }
-
-// NOTE: realized i'm overcomplicating things for now
-//
-// // helper to safely extract the true root domain using the PSL
-// fn get_root_domain(host: &str) -> Option<String> {
-//     addr::parse_domain_name(host)
-//         .ok()
-//         .and_then(|domain| domain.root().map(String::from))
-// }
-//
-// fn parse_webpage_links(body: &String, base_url: &Url) -> Result<HashSet<Url>, Box<dyn Error>> {
-//     let filter_subdirectories = true;
-//     let filter_subdomains = true;
-//     let filter_external_links = true;
-//
-//     let document = Html::parse_document(body); // builds a DOM from the raw text
-//     let selector = Selector::parse("a[href]")?;
-//     let mut extracted_urls = HashSet::new();
-//
-//     let base_host = base_url.host_str().ok_or("Base URL does not have a host")?;
-//     let base_root = get_root_domain(base_host);
-//
-//     for element in document.select(&selector) {
-//         // extracts the actual text inside the href attribute
-//         if let Some(href) = element.value().attr("href") {
-//             //
-//             if let Ok(mut absolute_url) = base_url.join(href) {
-//                 // remove headers (page.com/article#header -> page.com/article)
-//                 absolute_url.set_fragment(None);
-//
-//                 let absolute_host = match absolute_url.host_str() {
-//                     Some(host) => host,
-//                     // if the page contains a non conforming link, we simply keep going
-//                     _ => continue,
-//                     // .ok_or("Absolute URL does not have a host")?;
-//                 };
-//
-//                 // TODO test
-//                 let is_subdirectory = {
-//                     if absolute_url.origin() != base_url.origin() {
-//                         false
-//                     } else {
-//                         let mut base_path = base_url.path().to_string();
-//                         if !base_path.ends_with('/') {
-//                             base_path.push('/');
-//                         }
-//
-//                         let mut abs_path = absolute_url.path().to_string();
-//                         if !abs_path.ends_with('/') {
-//                             abs_path.push('/');
-//                         }
-//
-//                         abs_path.starts_with(&base_path)
-//                     }
-//                 };
-//
-//                 // TODO test
-//                 let is_subdomain = {
-//                     (absolute_host == base_host)
-//                         || absolute_host.ends_with(&format!(".{}", base_host))
-//                 };
-//
-//                 // TODO test
-//                 let is_external_link = { false };
-//
-//                 // filtering
-//                 if (filter_subdirectories && is_subdirectory)
-//                     || (filter_subdomains && is_subdomain)
-//                     || (filter_external_links && is_external_link)
-//                 {
-//                     continue;
-//                 }
-//
-//                 extracted_urls.insert(absolute_url);
-//             }
-//         }
-//     }
-//
-//     Ok(extracted_urls)
-// }
 
 // TODO:
 // 1. [-] create a reqwest client and pass it for tasks to use
