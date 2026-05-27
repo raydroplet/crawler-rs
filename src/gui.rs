@@ -1,5 +1,5 @@
 use eframe;
-use egui::Pos2;
+use egui::{Color32, Pos2, RichText};
 use egui_graphs::{FruchtermanReingoldWithCenterGravityState, Layout};
 use petgraph::{
     Directed,
@@ -9,10 +9,33 @@ use petgraph::{
 };
 use rand::RngExt;
 
+///////////////////
+
+#[derive(PartialEq)]
+enum LeftTab {
+    Activity,
+    Queue,
+    Errors,
+}
+
+#[derive(PartialEq)]
+enum RightTab {
+    Node,
+    Broken,
+    Hubs,
+}
+
+//////////////////
+
 pub struct EguiView {
     graph: egui_graphs::Graph<(), (), Undirected>,
     pub show_markdown_window: bool,
     pub markdown_text: String, // Store the raw markdown text here
+    //
+    left_tab: LeftTab,
+    right_tab: RightTab,
+    selected_node: bool,
+    auto_center: bool,
 }
 
 impl EguiView {
@@ -66,6 +89,10 @@ puppis indagine femori, te fuit et.
             graph: graph,
             show_markdown_window: false,
             markdown_text: String::from(text), // Store the raw markdown text here
+            left_tab: LeftTab::Activity,
+            right_tab: RightTab::Node,
+            selected_node: false,
+            auto_center: true,
         }
     }
 
@@ -227,19 +254,123 @@ impl eframe::App for EguiView {
 
         let panel_frame = egui::Frame::window(&ui.style());
 
+        let mut show_crawl_window = false;
+        if show_crawl_window {
+            egui::Window::new("Start Crawl")
+                .open(&mut show_crawl_window)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ui.ctx(), |ui| {
+                    ui.label("Configure your crawling job here.");
+                    ui.add_space(8.0);
+                    if ui.button("Start New Session").clicked() {
+                        // self.active_session = true;
+                        // close_crawl_window = true; // Set flag instead of mutating self directly
+                    }
+                    if ui.button("End Session (Test)").clicked() {
+                        // self.active_session = false;
+                        // close_crawl_window = true; // Set flag instead of mutating self directly
+                    }
+                });
+        }
+
         // 3. Left Panel: Crawling Input (Styled)
         egui::Panel::left("left_crawling_input")
             .frame(panel_frame.clone()) // Apply the window style
             .resizable(true)
             .default_size(220.0)
             .show_inside(ui, |ui| {
-                ui.add_space(4.0);
-                ui.heading("Crawling Input");
+                // top portion (tabs)
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.left_tab, LeftTab::Activity, "📈 Activity");
+                    ui.selectable_value(&mut self.left_tab, LeftTab::Queue, "⏳ Queue");
+                    ui.selectable_value(&mut self.left_tab, LeftTab::Errors, "❌ Errors");
+                });
+
                 ui.separator();
-                ui.label("Seed URL:");
-                ui.add_space(10.0);
-                ui.label("Max Depth: 3");
-                ui.label("Concurrency: 10");
+
+                // metrics pinned to absolute bottom
+                egui::Panel::bottom("left_metrics_footer")
+                    .frame(egui::Frame::NONE) // WARN: what is a frame?
+                    .show_inside(ui, |ui| {
+                        ui.add_space(8.0); // BUG: hidden separator() appears here. where it comes from?
+
+                        // Row 1 of metrics (Crawled & Queued)
+                        ui.columns(2, |cols| {
+                            cols[0].group(|ui| {
+                                ui.vertical_centered_justified(|ui| {
+                                    ui.heading(RichText::new("47").color(Color32::LIGHT_BLUE));
+                                    ui.label("crawled");
+                                });
+                            });
+                            cols[1].group(|ui| {
+                                ui.vertical_centered_justified(|ui| {
+                                    ui.heading(RichText::new("29").color(Color32::YELLOW));
+                                    ui.label("queued");
+                                });
+                            });
+                        });
+
+                        ui.add_space(4.0);
+
+                        // Row 2 of metrics (Errors & Avg)
+                        ui.columns(2, |cols| {
+                            cols[0].group(|ui| {
+                                ui.vertical_centered_justified(|ui| {
+                                    ui.heading(RichText::new("3").color(Color32::LIGHT_RED));
+                                    ui.label("errors");
+                                });
+                            });
+                            cols[1].group(|ui| {
+                                ui.vertical_centered_justified(|ui| {
+                                    ui.heading("340ms");
+                                    ui.label("avg");
+                                });
+                            });
+                        });
+
+                        ui.add_space(4.0); // Final bottom padding
+                    });
+
+                // A nested central panel perfectly swallows the exact remaining space
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show_inside(ui, |ui| match self.left_tab {
+                        LeftTab::Activity => {
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    let history = vec![
+                                        ("12:04", "200", "/blog/getting-..."),
+                                        ("12:04", "200", "/docs/api/v2"),
+                                        ("12:03", "404", "/legacy/old-api"),
+                                        ("12:03", "301", "/home → /"),
+                                        ("12:03", "200", "/pricing"),
+                                    ];
+                                    for (time, code, path) in history {
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(time).color(Color32::DARK_GRAY));
+                                            let code_color = if code.starts_with('2') {
+                                                Color32::GREEN
+                                            } else if code.starts_with('4') {
+                                                Color32::RED
+                                            } else {
+                                                Color32::YELLOW
+                                            };
+                                            ui.label(RichText::new(code).color(code_color));
+                                            ui.label(path);
+                                        });
+                                    }
+                                });
+                        }
+                        LeftTab::Queue => {
+                            ui.label("Queue content goes here...");
+                        }
+                        LeftTab::Errors => {
+                            ui.label("Errors content goes here...");
+                        }
+                    });
             });
 
         // 4. Right Panel: Crawling Inspector (Styled)
@@ -248,16 +379,151 @@ impl eframe::App for EguiView {
             .resizable(true)
             .default_size(280.0)
             .show_inside(ui, |ui| {
-                ui.add_space(4.0);
-                ui.heading("Inspector");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.right_tab, RightTab::Node, "⏺ Node");
+                    ui.selectable_value(&mut self.right_tab, RightTab::Hubs, "🌐 Hubs");
+                    ui.selectable_value(&mut self.right_tab, RightTab::Broken, "❌ Broken");
+                });
                 ui.separator();
-                ui.label("Selected Node Details:");
-                ui.add_space(4.0);
-                ui.label("No node selected.");
+                //////////
 
-                if ui.button("📝 Open Markdown Source").clicked() {
-                    self.show_markdown_window = !self.show_markdown_window;
+                match self.right_tab {
+                    RightTab::Node => {
+                        ui.label("🟢 /docs/api/v2");
+                        ui.add_space(8.0);
+
+                        egui::Grid::new("node_details_grid")
+                            .num_columns(2)
+                            .spacing([40.0, 4.0])
+                            .show(ui, |ui| {
+                                ui.label("Status");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            RichText::new(" 200 OK ")
+                                                .background_color(Color32::from_rgb(0, 100, 0))
+                                                .color(Color32::WHITE),
+                                        );
+                                    },
+                                );
+                                ui.end_row();
+
+                                ui.label("Depth");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label("2");
+                                    },
+                                );
+                                ui.end_row();
+
+                                ui.label("Load time");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label("280ms");
+                                    },
+                                );
+                                ui.end_row();
+
+                                ui.label("Size");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label("62 KB");
+                                    },
+                                );
+                                ui.end_row();
+
+                                ui.label("Links in");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label("5");
+                                    },
+                                );
+                                ui.end_row();
+
+                                ui.label("Links out");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label("9");
+                                    },
+                                );
+                                ui.end_row();
+                            });
+
+                        ui.add_space(10.0);
+
+                        if ui.button("📝 Open Markdown Source").clicked() {
+                            self.show_markdown_window = !self.show_markdown_window;
+                        }
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        ui.label(RichText::new("OUTBOUND").color(Color32::DARK_GRAY));
+                        ui.add_space(4.0);
+                        ui.label("/docs/api/v3");
+                        ui.separator();
+                        ui.label("/changelog");
+                        ui.separator();
+                        ui.label("/pricing");
+                    }
+                    RightTab::Broken => {
+                        ui.label("Broken Nodes:");
+                        ui.label("404 - /legacy/old-api");
+                    }
+                    RightTab::Hubs => {
+                        ui.label(RichText::new("BY IN-DEGREE").color(Color32::DARK_GRAY));
+                        ui.add_space(10.0);
+
+                        let hubs = vec![
+                            ("/docs", 12.0, 12.0),
+                            ("/pricing", 9.0, 12.0),
+                            ("/blog", 7.0, 12.0),
+                            ("/about", 5.0, 12.0),
+                            ("/contact", 3.0, 12.0),
+                        ];
+
+                        for (i, (path, value, max)) in hubs.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{}", i + 1));
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(*path);
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.label(
+                                                    RichText::new(format!("{} in", value))
+                                                        .color(Color32::GRAY),
+                                                );
+                                            },
+                                        );
+                                    });
+                                    let progress = value / max;
+                                    ui.add(
+                                        egui::ProgressBar::new(progress)
+                                            .desired_height(3.0)
+                                            .fill(Color32::from_rgb(80, 200, 150)),
+                                    );
+                                });
+                            });
+                            ui.add_space(4.0);
+                        }
+                    }
                 }
+
+                ///////
+                // ui.label("No node selected.");
+                //
+                // if ui.button("📝 Open Markdown Source").clicked() {
+                //     self.show_markdown_window = !self.show_markdown_window;
+                // }
             });
 
         // 5. Central Panel LAST
@@ -311,6 +577,11 @@ impl eframe::App for EguiView {
                 }
                 // ui.separator();
 
+                let settings_navigation = &egui_graphs::SettingsNavigation::new()
+                    .with_zoom_and_pan_enabled(true)
+                    .with_fit_to_screen_enabled(false);
+                    // .with_zoom_speed(self.settings_navigation.zoom_speed)
+                    // .with_fit_to_screen_padding(self.settings_navigation.fit_to_screen_padding);
                 // --- The Graph Widget ---
                 let mut view = egui_graphs::GraphView::<
                     _,
@@ -323,66 +594,98 @@ impl eframe::App for EguiView {
                     egui_graphs::LayoutForceDirected<
                         egui_graphs::FruchtermanReingoldWithCenterGravity,
                     >,
-                >::new(&mut self.graph);
+                >::new(&mut self.graph)
+                    .with_navigations(settings_navigation)
+                ;
 
                 ui.add(&mut view);
+
+                /////////////////// MINIMAP
+                egui::Window::new("Minimap Overlay")
+                    .anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -16.0])
+                    .resizable(false)
+                    .collapsible(false)
+                    .constrain_to(central_rect)
+                    .title_bar(false)
+                    .frame(egui::Frame::window(&ui.style()).inner_margin(8.0))
+                    .show(ui.ctx(), |ui| {
+                        let minimap_size = egui::vec2(150.0, 150.0);
+                        let (response, painter) =
+                            ui.allocate_painter(minimap_size, egui::Sense::hover());
+
+                        // Background
+                        painter.rect_filled(response.rect, 4.0, ui.visuals().extreme_bg_color);
+
+                        // 1. Find the bounding box of the entire graph
+                        let mut min_pos = egui::Pos2::new(f32::INFINITY, f32::INFINITY);
+                        let mut max_pos = egui::Pos2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
+
+                        for idx in self.graph.g().node_indices() {
+                            if let Some(node) = self.graph.g().node_weight(idx) {
+                                let loc = node.location();
+                                min_pos = min_pos.min(loc);
+                                max_pos = max_pos.max(loc);
+                            }
+                        }
+
+                        // Fallback for empty graph
+                        if min_pos.x == f32::INFINITY {
+                            min_pos = egui::Pos2::ZERO;
+                            max_pos = egui::Pos2::ZERO;
+                        }
+
+                        // Add padding to bounds
+                        let padding = 20.0;
+                        min_pos -= egui::vec2(padding, padding);
+                        max_pos += egui::vec2(padding, padding);
+
+                        // 2. Calculate scaling and offset to fit the graph inside the rect
+                        let graph_size = max_pos - min_pos;
+                        let scale = if graph_size.x > 0.0 && graph_size.y > 0.0 {
+                            (minimap_size.x / graph_size.x).min(minimap_size.y / graph_size.y)
+                        } else {
+                            1.0
+                        };
+
+                        let graph_center = min_pos.to_vec2() + graph_size / 2.0;
+                        let offset = response.rect.center().to_vec2() - (graph_center * scale);
+
+                        let transform = |pos: egui::Pos2| -> egui::Pos2 {
+                            egui::Pos2::new(pos.x * scale, pos.y * scale) + offset
+                        };
+
+                        // 3. Draw edges (rendered first so they appear beneath nodes)
+                        for edge_idx in self.graph.g().edge_indices() {
+                            if let Some((src, dst)) = self.graph.g().edge_endpoints(edge_idx) {
+                                if let (Some(s_node), Some(d_node)) = (
+                                    self.graph.g().node_weight(src),
+                                    self.graph.g().node_weight(dst),
+                                ) {
+                                    painter.line_segment(
+                                        [
+                                            transform(s_node.location()),
+                                            transform(d_node.location()),
+                                        ],
+                                        egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+                                    );
+                                }
+                            }
+                        }
+
+                        // 4. Draw nodes
+                        for idx in self.graph.g().node_indices() {
+                            if let Some(node) = self.graph.g().node_weight(idx) {
+                                // Determine color based on selection state (if supported) or use default green
+                                let color = if node.selected() {
+                                    egui::Color32::WHITE
+                                } else {
+                                    egui::Color32::from_rgb(80, 200, 150)
+                                };
+
+                                painter.circle_filled(transform(node.location()), 1.5, color);
+                            }
+                        }
+                    });
             });
     }
 }
-
-// impl EguiView {
-//     fn panels(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-//         // panel for menu bar
-//         let mut style = egui::Frame::new().inner_margin(4);
-//         let mut cmd = Command::Nothing;
-//
-//         egui::Panel::top("wrap_app_top_bar")
-//             .frame(style)
-//             .show_inside(ui, |ui| {
-//                 ui.horizontal_wrapped(|ui| {
-//                     ui.visuals_mut().button_frame = false;
-//                     self.bar_contents(ui, frame, &mut cmd);
-//                 });
-//             });
-//     }
-//
-//     fn bar_contents(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, cmd: &mut Command) {
-//         ui.add_space(8.0);
-//         ui.separator();
-//         ui.menu_button("💻 Backend", |ui| {
-//             ui.set_style(ui.global_style()); // ignore the "menu" style set by `menu_button`.
-//             self.backend_panel_contents(ui, frame, cmd);
-//         });
-//
-//         ui.separator();
-//
-//         let mut selected_anchor = self.state.selected_anchor;
-//         for (name, anchor, _app) in self.apps_iter_mut() {
-//             if ui
-//                 .selectable_label(selected_anchor == anchor, name)
-//                 .clicked()
-//             {
-//                 selected_anchor = anchor;
-//                 if frame.is_web() {
-//                     ui.open_url(egui::OpenUrl::same_tab(format!("#{anchor}")));
-//                 }
-//             }
-//         }
-//         self.state.selected_anchor = selected_anchor;
-//
-//         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-//             if false {
-//                 // TODO(emilk): fix the overlap on small screens
-//                 if clock_button(ui, crate::seconds_since_midnight()).clicked() {
-//                     self.state.selected_anchor = Anchor::Clock;
-//                     if frame.is_web() {
-//                         ui.open_url(egui::OpenUrl::same_tab("#clock"));
-//                     }
-//                 }
-//             }
-//
-//             egui::warn_if_debug_build(ui);
-//         });
-//     }
-// }
-//

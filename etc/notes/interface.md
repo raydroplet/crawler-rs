@@ -1,0 +1,56 @@
+
+
+- Crawling Request Window
+  - (CrawlRequest box)
+    - `source: Url` (text box)
+    - `depth: u8` (text box with up down buttons on the right)
+  - (buttons on bottom)
+    - cancel/(run, crawl, fire, or any other fitting word)
+- about window
+  - [see this](https://github.com/emilk/egui/blob/main/crates/egui_demo_lib/src/demo/about.rs)
+
+---------------
+- Widgets:
+  - Crawl queue
+    - progress bar (completed/total)
+    - List: in progress, waiting errors.
+  - Activity Log
+    - pages crawled, pages queued, errors, avg load
+    - list: crawled pages history with timestap
+
+- Menu bar
+  - File
+  - View
+  - Crawl (opens the crawl window)
+- Window organization
+  - No session:
+    - Left Panel (works as a info visualizar for the crawl)
+      - (centered) "message about no existing session"
+      - (below it) a green button "start crawl" which opens a crawl window when Clicked
+    - Center Graph
+      - "no active graph" message centered.
+    - Right Panel (works as an inspector)
+      - "no selected node" message centered.
+  - Active session:
+    - Left Panel (has tabs for each widget)
+      - Activity
+        - 4 boxes: N crawled, N queued, N errors, Nms avegare time per page
+        - below it a list of crawled pages: (timestap 00:00, error code, address
+      - Queue
+        - a list of queued pages, similar format with timestamp, address
+      - Errors
+        - empty for now
+    - Center Graph
+      - just the graph widget, keep it as it is
+    - Right Panel (has tabs for each widget)
+      - Node
+        - node inspection: base address (wikipedia.com), path (/page/postX), then a list of info (status, depth, load time, size, links in, links out) with the info justified on the right and labels on the left.
+        - list of outbound nodes
+      - broken
+        - list of broken (error code) nodes
+      - hubs
+        - list of nodes sorted by number of connections (have a bar below each (links/total) proportional to number of connections to the node with most connections)
+- Others
+  - crawl window
+    - text box for the url
+    - depth (integer) selector

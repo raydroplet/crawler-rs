@@ -111,9 +111,10 @@ impl WebCrawler {
     ) {
         //--- handle commands ---//
         let mut visited = HashSet::new();
-        // we allow 2 simultaneous network requests
-        // the parsing is unbounded tho.
+        // we allow limited simultaneous network requests.
         let max_requesters = Arc::new(Semaphore::new(4));
+
+        // TODO: add a per-website request delay
 
         loop {
             tokio::select! {
@@ -341,8 +342,7 @@ impl WebCrawler {
     }
 }
 
-#[tokio::main]
-async fn main() {
+async fn crawling_test() {
     let (tx, mut rx) = mpsc::channel(1024);
 
     // 1. Wrap the crawler in an Arc so we can share ownership
@@ -372,22 +372,20 @@ async fn main() {
 
     loop {
         match tokio::time::timeout(timeout_duration, rx.recv()).await {
-            Ok(Some(response)) => {
-                match response {
-                    CrawlResponse::Page(parser_result) => {
-                        println!("========================================");
-                        println!("Source URL  : {}", parser_result.source);
-                        println!("Depth Left  : {}", parser_result.depth);
-                        println!("HTML Size   : {} bytes", parser_result.page_content.len());
-                        println!("Links Found : {}", parser_result.discovered_links.len());
-                        println!("--- Links ---");
+            Ok(Some(response)) => match response {
+                CrawlResponse::Page(parser_result) => {
+                    println!("========================================");
+                    println!("Source URL  : {}", parser_result.source);
+                    println!("Depth Left  : {}", parser_result.depth);
+                    println!("HTML Size   : {} bytes", parser_result.page_content.len());
+                    println!("Links Found : {}", parser_result.discovered_links.len());
+                    println!("--- Links ---");
 
-                        for link in parser_result.discovered_links {
-                            println!(" -> {}", link);
-                        }
+                    for link in parser_result.discovered_links {
+                        println!(" -> {}", link);
                     }
                 }
-            }
+            },
             Ok(None) => {
                 println!("Crawler finished processing all links.");
                 break;
@@ -405,6 +403,11 @@ async fn main() {
     // 4. Ensure the original crawler lives until the end of main
     drop(crawler);
     println!("Ending.\n");
+}
+
+#[tokio::main]
+async fn main() {
+    crawling_test().await;
 }
 
 // TODO:
