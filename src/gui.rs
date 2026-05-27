@@ -97,9 +97,16 @@ puppis indagine femori, te fuit et.
     }
 
     pub fn run(&self) -> eframe::Result<()> {
+        let mut options = eframe::NativeOptions::default();
+
+        options.viewport = egui::ViewportBuilder::default()
+            .with_resizable(false)
+            .with_inner_size([1920.0 / 2.0, (1080.0 / 2.0)])
+            .with_active(false);
+
         eframe::run_native(
             "egui_graphs_basic_demo",
-            eframe::NativeOptions::default(),
+            options,
             Box::new(|_context| Ok(Box::new(EguiView::new()))),
         )
     }
@@ -580,8 +587,8 @@ impl eframe::App for EguiView {
                 let settings_navigation = &egui_graphs::SettingsNavigation::new()
                     .with_zoom_and_pan_enabled(true)
                     .with_fit_to_screen_enabled(false);
-                    // .with_zoom_speed(self.settings_navigation.zoom_speed)
-                    // .with_fit_to_screen_padding(self.settings_navigation.fit_to_screen_padding);
+                // .with_zoom_speed(self.settings_navigation.zoom_speed)
+                // .with_fit_to_screen_padding(self.settings_navigation.fit_to_screen_padding);
                 // --- The Graph Widget ---
                 let mut view = egui_graphs::GraphView::<
                     _,
@@ -595,8 +602,7 @@ impl eframe::App for EguiView {
                         egui_graphs::FruchtermanReingoldWithCenterGravity,
                     >,
                 >::new(&mut self.graph)
-                    .with_navigations(settings_navigation)
-                ;
+                .with_navigations(settings_navigation);
 
                 ui.add(&mut view);
 
