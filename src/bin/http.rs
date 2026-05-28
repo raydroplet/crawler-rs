@@ -5,6 +5,7 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Semaphore, mpsc, oneshot};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 //---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
 // what the external world sees
@@ -38,6 +39,10 @@ struct RequesterResult {
 struct ParserResult {
     source: Url,
     depth: i32,
+    //
+    timestamp_start: SystemTime,
+    timestamp_end: SystemTime,
+    //
     page_content: String,
     discovered_links: HashSet<Url>,
 }

@@ -23,7 +23,6 @@ pub struct EguiView {
     graph: egui_graphs::Graph<(), (), Undirected>,
     pub show_markdown_window: bool,
     pub show_outbound_window: bool,
-    pub show_inbound_window: bool,
     pub markdown_text: String,
     //
     left_tab: LeftTab,
@@ -86,7 +85,6 @@ puppis indagine femori, te fuit et.
             graph: graph,
             show_markdown_window: false,
             show_outbound_window: false,
-            show_inbound_window: false,
             markdown_text: String::from(text),
             left_tab: LeftTab::Activity,
             selected_node: false,
@@ -348,7 +346,7 @@ impl eframe::App for EguiView {
 
         let custom_panel_frame = egui::Frame::default()
             .fill(ui.visuals().extreme_bg_color)
-            .inner_margin(egui::Margin::same(0));
+            .inner_margin(egui::Margin::same(8));
 
         let cards_spacing = 4.0;
         let down_triangle_icon = "🔻";
@@ -365,197 +363,219 @@ impl eframe::App for EguiView {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        let card_frame = egui::Frame::default()
+                            .fill(ui.visuals().window_fill)
+                            .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                            .inner_margin(egui::Margin::same(12))
+                            .corner_radius(0.0);
 
-                    let card_frame = egui::Frame::default()
-                        .fill(ui.visuals().window_fill)
-                        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                        .inner_margin(egui::Margin::same(12))
-                        .corner_radius(0.0);
-
-                    // --- SECTION 1: NODE ---
-                    card_frame.show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-
-                        ui.horizontal(|ui| {
-                            ui.heading("⏺ Node Details");
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let icon = if self.node_details_expanded { down_triangle_icon } else { left_triangle_icon };
-                                if ui.add(egui::Button::new(icon).frame(false)).clicked() {
-                                    self.node_details_expanded = !self.node_details_expanded;
-                                }
-                            });
-                        });
-
-                        if self.node_details_expanded {
-                            ui.add_space(4.0);
-                            ui.separator();
-                            ui.add_space(4.0);
-
-                            ui.label("🟢 /docs/api/v2");
-                            ui.add_space(8.0);
-
-                            egui::Grid::new("node_details_grid")
-                                .num_columns(2)
-                                .striped(true)
-                                .spacing([40.0, 4.0])
-                                .show(ui, |ui| {
-                                    fn add_stretched_right_cell(
-                                        ui: &mut egui::Ui,
-                                        content: impl FnOnce(&mut egui::Ui),
-                                    ) {
-                                        ui.scope(|ui| {
-                                            ui.set_min_width(ui.available_width());
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                content,
-                                            );
-                                        });
-                                    }
-
-                                    ui.label("Status");
-                                    add_stretched_right_cell(ui, |ui| {
-                                        ui.label(
-                                            RichText::new(" 200 OK ")
-                                                .background_color(Color32::from_rgb(0, 100, 0))
-                                                .color(Color32::WHITE),
-                                        );
-                                    });
-                                    ui.end_row();
-
-                                    ui.label("Depth");
-                                    add_stretched_right_cell(ui, |ui| {
-                                        ui.label("2");
-                                    });
-                                    ui.end_row();
-
-                                    ui.label("Load time");
-                                    add_stretched_right_cell(ui, |ui| {
-                                        ui.label("280ms");
-                                    });
-                                    ui.end_row();
-
-                                    ui.label("Page size");
-                                    add_stretched_right_cell(ui, |ui| {
-                                        ui.label("62 KB");
-                                    });
-                                    ui.end_row();
-
-                                    ui.label("Links in");
-                                    add_stretched_right_cell(ui, |ui| {
-                                        ui.label("5");
-                                    });
-                                    ui.end_row();
-
-                                    ui.label("Links out");
-                                    add_stretched_right_cell(ui, |ui| {
-                                        ui.label("9");
-                                    });
-                                    ui.end_row();
-                                });
-                            ui.add_space(10.0);
+                        // --- SECTION 1: NODE ---
+                        card_frame.show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
 
                             ui.horizontal(|ui| {
-                                if ui.button("📝 Markdown").clicked() {
-                                    self.show_markdown_window = !self.show_markdown_window;
-                                }
-                                if ui.button("Outbound").clicked() {
-                                    self.show_outbound_window = !self.show_outbound_window;
-                                }
-                                if ui.button("Inbound").clicked() {
-                                    self.show_inbound_window = !self.show_inbound_window;
-                                }
+                                ui.heading("⏺ Node Details");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let icon = if self.node_details_expanded {
+                                            down_triangle_icon
+                                        } else {
+                                            left_triangle_icon
+                                        };
+                                        if ui.add(egui::Button::new(icon).frame(false)).clicked() {
+                                            self.node_details_expanded =
+                                                !self.node_details_expanded;
+                                        }
+                                    },
+                                );
                             });
-                        }
-                    });
 
-                    ui.add_space(cards_spacing);
+                            if self.node_details_expanded {
+                                ui.add_space(4.0);
+                                ui.separator();
+                                ui.add_space(4.0);
 
-                    // --- SECTION 2: HUBS ---
-                    card_frame.show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
+                                ui.label("🟢 (PAGE TITLE) /docs/api/v2");
+                                ui.add_space(8.0);
 
-                        ui.horizontal(|ui| {
-                            ui.heading("🌐 Hubs");
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let icon = if self.hubs_expanded { down_triangle_icon } else { left_triangle_icon };
-                                if ui.add(egui::Button::new(icon).frame(false)).clicked() {
-                                    self.hubs_expanded = !self.hubs_expanded;
-                                }
-                            });
-                        });
+                                egui::Grid::new("node_details_grid")
+                                    .num_columns(2)
+                                    .striped(true)
+                                    .spacing([40.0, 4.0])
+                                    .show(ui, |ui| {
+                                        fn add_stretched_right_cell(
+                                            ui: &mut egui::Ui,
+                                            content: impl FnOnce(&mut egui::Ui),
+                                        ) {
+                                            ui.scope(|ui| {
+                                                ui.set_min_width(ui.available_width());
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    content,
+                                                );
+                                            });
+                                        }
 
-                        if self.hubs_expanded {
-                            ui.add_space(4.0);
-                            ui.separator();
-                            ui.add_space(4.0);
-
-                            ui.label(RichText::new("BY IN-DEGREE").color(Color32::DARK_GRAY));
-                            ui.add_space(10.0);
-
-                            let hubs = vec![
-                                ("/docs", 12.0, 12.0),
-                                ("/pricing", 9.0, 12.0),
-                                ("/blog", 7.0, 12.0),
-                                ("/about", 5.0, 12.0),
-                                ("/contact", 3.0, 12.0),
-                            ];
-
-                            for (i, (path, value, max)) in hubs.iter().enumerate() {
-                                ui.horizontal(|ui| {
-                                    ui.label(format!("{}", i + 1));
-                                    ui.vertical(|ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(*path);
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    ui.label(
-                                                        RichText::new(format!("{} in", value))
-                                                            .color(Color32::GRAY),
-                                                    );
-                                                },
+                                        ui.label("Status");
+                                        add_stretched_right_cell(ui, |ui| {
+                                            ui.label(
+                                                RichText::new(" 200 OK ")
+                                                    .background_color(Color32::from_rgb(0, 100, 0))
+                                                    .color(Color32::WHITE),
                                             );
                                         });
-                                        let progress = value / max;
-                                        ui.add(
-                                            egui::ProgressBar::new(progress)
-                                                .desired_height(3.0)
-                                                .fill(Color32::from_rgb(80, 200, 150)),
-                                        );
+                                        ui.end_row();
+
+                                        ui.label("Depth");
+                                        add_stretched_right_cell(ui, |ui| {
+                                            ui.label("2");
+                                        });
+                                        ui.end_row();
+
+                                        ui.label("Links in");
+                                        add_stretched_right_cell(ui, |ui| {
+                                            ui.label("5");
+                                        });
+                                        ui.end_row();
+
+                                        ui.label("Links out");
+                                        add_stretched_right_cell(ui, |ui| {
+                                            ui.label("9");
+                                        });
+                                        ui.end_row();
+
+                                        ui.label("Page size");
+                                        add_stretched_right_cell(ui, |ui| {
+                                            ui.label("62 KB");
+                                        });
+                                        ui.end_row();
+
+                                        ui.label("Load time");
+                                        add_stretched_right_cell(ui, |ui| {
+                                            ui.label("280ms");
+                                        });
+                                        ui.end_row();
                                     });
+                                ui.add_space(10.0);
+
+                                ui.horizontal(|ui| {
+                                    if ui.button("📝 Markdown").clicked() {
+                                        self.show_markdown_window = !self.show_markdown_window;
+                                    }
+                                    if ui.button("Outbound").clicked() {
+                                        self.show_outbound_window = !self.show_outbound_window;
+                                    }
                                 });
-                                ui.add_space(4.0);
                             }
-                        }
-                    });
-
-                    ui.add_space(cards_spacing);
-
-                    // --- SECTION 3: BROKEN ---
-                    card_frame.show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-
-                        ui.horizontal(|ui| {
-                            ui.heading("❌ Broken Links");
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let icon = if self.broken_expanded { down_triangle_icon } else { left_triangle_icon };
-                                if ui.add(egui::Button::new(icon).frame(false)).clicked() {
-                                    self.broken_expanded = !self.broken_expanded;
-                                }
-                            });
                         });
 
-                        if self.broken_expanded {
-                            ui.add_space(4.0);
-                            ui.separator();
-                            ui.add_space(4.0);
+                        ui.add_space(cards_spacing);
 
-                            ui.label("404 - /legacy/old-api");
-                        }
+                        // --- SECTION 2: HUBS ---
+                        card_frame.show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+
+                            ui.horizontal(|ui| {
+                                ui.heading("🌐 Hubs");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let icon = if self.hubs_expanded {
+                                            down_triangle_icon
+                                        } else {
+                                            left_triangle_icon
+                                        };
+                                        if ui.add(egui::Button::new(icon).frame(false)).clicked() {
+                                            self.hubs_expanded = !self.hubs_expanded;
+                                        }
+                                    },
+                                );
+                            });
+
+                            if self.hubs_expanded {
+                                ui.add_space(4.0);
+                                ui.separator();
+                                ui.add_space(4.0);
+
+                                ui.label(RichText::new("BY IN-DEGREE").color(Color32::DARK_GRAY));
+                                ui.add_space(10.0);
+
+                                let hubs = vec![
+                                    ("/docs", 12.0, 12.0),
+                                    ("/pricing", 9.0, 12.0),
+                                    ("/blog", 7.0, 12.0),
+                                    ("/about", 5.0, 12.0),
+                                    ("/contact", 3.0, 12.0),
+                                ];
+
+                                for (i, (path, value, max)) in hubs.iter().enumerate() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("{}", i + 1));
+                                        ui.vertical(|ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(*path);
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.label(
+                                                            RichText::new(format!("{} in", value))
+                                                                .color(Color32::GRAY),
+                                                        );
+                                                    },
+                                                );
+                                            });
+                                            let progress = value / max;
+                                            ui.add(
+                                                egui::ProgressBar::new(progress)
+                                                    .desired_height(3.0)
+                                                    .fill(Color32::from_rgb(80, 200, 150)),
+                                            );
+                                        });
+                                    });
+                                    ui.add_space(4.0);
+                                }
+                            }
+                        });
+
+                        ui.add_space(cards_spacing);
+
+                        // --- SECTION 3: BROKEN ---
+                        card_frame.show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+
+                            ui.horizontal(|ui| {
+                                ui.heading("❌ Broken Links");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let icon = if self.broken_expanded {
+                                            down_triangle_icon
+                                        } else {
+                                            left_triangle_icon
+                                        };
+                                        if ui.add(egui::Button::new(icon).frame(false)).clicked() {
+                                            self.broken_expanded = !self.broken_expanded;
+                                        }
+                                    },
+                                );
+                            });
+
+                            if self.broken_expanded {
+                                ui.add_space(4.0);
+                                ui.separator();
+                                ui.add_space(4.0);
+
+                                ui.label("404 - /legacy/old-api");
+                            }
+                        });
+
+                        ui.add_space(cards_spacing);
                     });
-
-                    ui.add_space(cards_spacing);
-                });
             });
 
         // 5. Central Panel LAST
@@ -568,7 +588,7 @@ impl eframe::App for EguiView {
                     egui::Window::new("Markdown Source")
                         .open(&mut self.show_markdown_window)
                         .resizable(true)
-                        .collapsible(true)
+                        .collapsible(false)
                         .constrain_to(central_rect)
                         .default_size([500.0, 400.0])
                         .show(ui.ctx(), |ui| {
@@ -584,35 +604,26 @@ impl eframe::App for EguiView {
                         });
                 }
 
-                if self.show_inbound_window {
-                    egui::Window::new("Inbound Links")
-                        .open(&mut self.show_inbound_window)
-                        .resizable(true)
-                        .constrain_to(central_rect)
-                        .default_size([300.0, 200.0])
-                        .show(ui.ctx(), |ui| {
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                ui.label("/home");
-                                ui.label("/docs/index");
-                                ui.label("/blog/release-notes");
-                                ui.label("/sitemap.xml");
-                                ui.label("/contact");
-                            });
-                        });
-                }
-
                 if self.show_outbound_window {
+                    let inspect_node = |id: u8| {};
+                    let node_button = |ui: &mut egui::Ui, label: &str, id: u8| {
+                        if ui.button(label).clicked() {
+                            println!("{}", id);
+                        }
+                    };
+
                     egui::Window::new("Outbound Links")
                         .open(&mut self.show_outbound_window)
                         .resizable(true)
+                        .collapsible(false)
                         .constrain_to(central_rect)
                         .default_size([300.0, 200.0])
                         .show(ui.ctx(), |ui| {
                             egui::ScrollArea::vertical().show(ui, |ui| {
-                                ui.label("/docs/api/v3");
-                                ui.label("/changelog");
-                                ui.label("/pricing");
-                                ui.label("https://github.com/example/repo");
+                                node_button(ui, "/docs/api/v3", 0);
+                                node_button(ui, "/changelog", 2);
+                                node_button(ui, "/pricing", 3);
+                                node_button(ui, "https://github.com/example/repo", 4);
                             });
                         });
                 }
