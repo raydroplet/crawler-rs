@@ -101,7 +101,7 @@ puppis indagine femori, te fuit et.
         let mut options = eframe::NativeOptions::default();
 
         options.viewport = egui::ViewportBuilder::default()
-            .with_resizable(true)
+            .with_resizable(false)
             .with_inner_size([1920.0 / 2.0, (1080.0 / 2.0)])
             .with_active(false);
 
@@ -465,18 +465,6 @@ impl eframe::App for EguiView {
                                     self.show_inbound_window = !self.show_inbound_window;
                                 }
                             });
-
-                            ui.add_space(10.0);
-                            ui.separator();
-                            ui.add_space(10.0);
-
-                            ui.label(RichText::new("OUTBOUND").color(Color32::DARK_GRAY));
-                            ui.add_space(4.0);
-                            ui.label("/docs/api/v3");
-                            ui.separator();
-                            ui.label("/changelog");
-                            ui.separator();
-                            ui.label("/pricing");
                         }
                     });
 
