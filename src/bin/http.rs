@@ -37,7 +37,8 @@ struct RequesterResult {
 }
 
 struct ParserResult {
-    source: Url,
+    domain: Url,
+    path: Option<Url>,
     depth: i32,
     //
     timestamp_start: SystemTime,
@@ -262,7 +263,7 @@ impl WebCrawler {
                 println!("Spawn parser acdor: {}", request_result.source);
                 let urls: HashSet<Url> = Self::parse_webpage_html(&request_result);
                 let result = ParserResult {
-                    source: request_result.source,
+                    domain: request_result.source,
                     depth: request_result.depth,
                     page_content: request_result.html_body,
                     discovered_links: urls,
@@ -380,7 +381,7 @@ async fn crawling_test() {
             Ok(Some(response)) => match response {
                 CrawlResponse::Page(parser_result) => {
                     println!("========================================");
-                    println!("Source URL  : {}", parser_result.source);
+                    println!("Source URL  : {}", parser_result.domain);
                     println!("Depth Left  : {}", parser_result.depth);
                     println!("HTML Size   : {} bytes", parser_result.page_content.len());
                     println!("Links Found : {}", parser_result.discovered_links.len());

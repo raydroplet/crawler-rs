@@ -26,8 +26,7 @@ pub struct EguiView {
     pub markdown_text: String,
     //
     left_tab: LeftTab,
-    selected_node: bool,
-    auto_center: bool,
+    free_graph_movement: bool,
     // Card expansion states
     node_details_expanded: bool,
     hubs_expanded: bool,
@@ -87,8 +86,7 @@ puppis indagine femori, te fuit et.
             show_outbound_window: false,
             markdown_text: String::from(text),
             left_tab: LeftTab::Activity,
-            selected_node: false,
-            auto_center: true,
+            free_graph_movement: false,
             node_details_expanded: true,
             hubs_expanded: true,
             broken_expanded: true,
@@ -203,7 +201,7 @@ impl eframe::App for EguiView {
 
         let graph_frame = egui::Frame::default()
             .fill(ui.visuals().extreme_bg_color)
-            .inner_margin(egui::Margin::symmetric(8, 4));
+            .inner_margin(egui::Margin::symmetric(0, 0));
 
         // 2. Global Top Menu
         egui::Panel::top("top_menu_bar")
@@ -229,6 +227,16 @@ impl eframe::App for EguiView {
                         }
                         if ui.button("⚙ Settings").clicked() {
                             println!("Settings");
+                        }
+                    });
+                    ui.menu_button("Graph", |ui| {
+                        if ui.button("🔄 Center").clicked() {
+                            self.free_graph_movement = !self.free_graph_movement;
+                            println!("Center");
+                        }
+                        if ui.button("🔄 Reorganize").clicked() {
+                            Self::distribute_nodes_circle_generic(&mut self.graph);
+                            println!("Reorganize");
                         }
                     });
                 });
@@ -352,11 +360,18 @@ impl eframe::App for EguiView {
         let down_triangle_icon = "🔻";
         let left_triangle_icon = "◀";
 
+        fn add_stretched_right_cell(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+            ui.scope(|ui| {
+                ui.set_min_width(ui.available_width());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), content);
+            });
+        }
+
         // 4. Right Panel: Crawling Inspector (Sequential Cards)
         egui::Panel::right("right_crawling_inspector")
             .frame(custom_panel_frame)
-            .resizable(true)
-            .default_size(280.0)
+            .resizable(false)
+            .default_size(200.0)
             .show_inside(ui, |ui| {
                 // auto_shrink([false, false]) ensures the scroll area claims the full width
                 // preventing horizontal jumping when scrollbars appear.
@@ -374,7 +389,7 @@ impl eframe::App for EguiView {
                             ui.set_min_width(ui.available_width());
 
                             ui.horizontal(|ui| {
-                                ui.heading("⏺ Node Details");
+                                ui.heading("⏺ Node");
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
@@ -396,7 +411,33 @@ impl eframe::App for EguiView {
                                 ui.separator();
                                 ui.add_space(4.0);
 
-                                ui.label("🟢 (PAGE TITLE) /docs/api/v2");
+                                // 1. URL HEADER: High contrast, zero gap, and text wrapping
+                                egui::Frame::none()
+                                    .fill(ui.visuals().faint_bg_color) // Uses the active theme's subtle background color
+                                    .rounding(6.0) // Rounds the corners
+                                    .inner_margin(8.0) // Adds padding inside the background box
+                                    .show(ui, |ui| {
+                                        // Force the frame to stretch to the edges so the text centers nicely within the whole panel width
+                                        ui.set_min_width(ui.available_width());
+
+                                        ui.vertical_centered(|ui| {
+                                            ui.label(
+                                                egui::RichText::new("wikipedia.com")
+                                                    .strong()
+                                                    .size(12.0),
+                                            );
+
+                                            if true {
+                                                // Mute the path so the domain stands out as the primary identifier
+                                                ui.label(
+                                                    egui::RichText::new("/post-post")
+                                                        .color(ui.visuals().weak_text_color())
+                                                        .size(10.0),
+                                                );
+                                            }
+                                        });
+                                    });
+
                                 ui.add_space(8.0);
 
                                 egui::Grid::new("node_details_grid")
@@ -404,21 +445,6 @@ impl eframe::App for EguiView {
                                     .striped(true)
                                     .spacing([40.0, 4.0])
                                     .show(ui, |ui| {
-                                        fn add_stretched_right_cell(
-                                            ui: &mut egui::Ui,
-                                            content: impl FnOnce(&mut egui::Ui),
-                                        ) {
-                                            ui.scope(|ui| {
-                                                ui.set_min_width(ui.available_width());
-                                                ui.with_layout(
-                                                    egui::Layout::right_to_left(
-                                                        egui::Align::Center,
-                                                    ),
-                                                    content,
-                                                );
-                                            });
-                                        }
-
                                         ui.label("Status");
                                         add_stretched_right_cell(ui, |ui| {
                                             ui.label(
@@ -432,12 +458,6 @@ impl eframe::App for EguiView {
                                         ui.label("Depth");
                                         add_stretched_right_cell(ui, |ui| {
                                             ui.label("2");
-                                        });
-                                        ui.end_row();
-
-                                        ui.label("Links in");
-                                        add_stretched_right_cell(ui, |ui| {
-                                            ui.label("5");
                                         });
                                         ui.end_row();
 
@@ -459,13 +479,14 @@ impl eframe::App for EguiView {
                                         });
                                         ui.end_row();
                                     });
-                                ui.add_space(10.0);
+
+                                ui.add_space(8.0);
 
                                 ui.horizontal(|ui| {
                                     if ui.button("📝 Markdown").clicked() {
                                         self.show_markdown_window = !self.show_markdown_window;
                                     }
-                                    if ui.button("Outbound").clicked() {
+                                    if ui.button("🕸 Outbound").clicked() {
                                         self.show_outbound_window = !self.show_outbound_window;
                                     }
                                 });
@@ -500,20 +521,15 @@ impl eframe::App for EguiView {
                                 ui.separator();
                                 ui.add_space(4.0);
 
-                                ui.label(RichText::new("BY IN-DEGREE").color(Color32::DARK_GRAY));
-                                ui.add_space(10.0);
-
+                                let max = 12.0;
                                 let hubs = vec![
-                                    ("/docs", 12.0, 12.0),
-                                    ("/pricing", 9.0, 12.0),
-                                    ("/blog", 7.0, 12.0),
-                                    ("/about", 5.0, 12.0),
-                                    ("/contact", 3.0, 12.0),
+                                    ("wikipedia.com", 12.0),
+                                    ("reddit.com", 10.0),
+                                    ("rust-lang.org", 9.0),
                                 ];
 
-                                for (i, (path, value, max)) in hubs.iter().enumerate() {
+                                for (path, value) in hubs.iter() {
                                     ui.horizontal(|ui| {
-                                        ui.label(format!("{}", i + 1));
                                         ui.vertical(|ui| {
                                             ui.horizontal(|ui| {
                                                 ui.label(*path);
@@ -523,7 +539,7 @@ impl eframe::App for EguiView {
                                                     ),
                                                     |ui| {
                                                         ui.label(
-                                                            RichText::new(format!("{} in", value))
+                                                            RichText::new(format!("{}", value))
                                                                 .color(Color32::GRAY),
                                                         );
                                                     },
@@ -533,7 +549,7 @@ impl eframe::App for EguiView {
                                             ui.add(
                                                 egui::ProgressBar::new(progress)
                                                     .desired_height(3.0)
-                                                    .fill(Color32::from_rgb(80, 200, 150)),
+                                                    .fill(Color32::from_rgb(40, 100, 180)),
                                             );
                                         });
                                     });
@@ -549,7 +565,7 @@ impl eframe::App for EguiView {
                             ui.set_min_width(ui.available_width());
 
                             ui.horizontal(|ui| {
-                                ui.heading("❌ Broken Links");
+                                ui.heading("❌ Broken");
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
@@ -565,16 +581,69 @@ impl eframe::App for EguiView {
                                 );
                             });
 
+                            let broken = vec![
+                                ("broken-website.web", 404),
+                                ("123.com", 401),
+                                ("square.circle", 418),
+                            ];
                             if self.broken_expanded {
                                 ui.add_space(4.0);
                                 ui.separator();
                                 ui.add_space(4.0);
 
-                                ui.label("404 - /legacy/old-api");
+                                for (address, code) in broken.iter() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(*address);
+                                        add_stretched_right_cell(ui, |ui| {
+                                            ui.label(
+                                                RichText::new(format!(" {} ", code))
+                                                    .background_color(Color32::from_rgb(80, 10, 10))
+                                                    .color(Color32::WHITE),
+                                            );
+                                        });
+                                    });
+                                }
                             }
                         });
 
                         ui.add_space(cards_spacing);
+
+                        // NOTE:
+                        card_frame.show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.heading("⬣ Graph");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let icon = if self.broken_expanded {
+                                            down_triangle_icon
+                                        } else {
+                                            left_triangle_icon
+                                        };
+                                        if ui.add(egui::Button::new(icon).frame(false)).clicked() {
+                                            self.broken_expanded = !self.broken_expanded;
+                                        }
+                                    },
+                                );
+                            });
+
+                            egui::Grid::new("graph_details_grid")
+                                .num_columns(2)
+                                .striped(true)
+                                .spacing([40.0, 4.0])
+                                .show(ui, |ui| {
+                                    ui.label("Nodes");
+                                    add_stretched_right_cell(ui, |ui| {
+                                        ui.label("2934");
+                                    });
+                                    ui.end_row();
+                                    ui.label("Conncetions");
+                                    add_stretched_right_cell(ui, |ui| {
+                                        ui.label("3102");
+                                    });
+                                    ui.end_row();
+                                });
+                        });
                     });
             });
 
@@ -629,8 +698,8 @@ impl eframe::App for EguiView {
                 }
 
                 let settings_navigation = &egui_graphs::SettingsNavigation::new()
-                    .with_zoom_and_pan_enabled(true)
-                    .with_fit_to_screen_enabled(false);
+                    .with_zoom_and_pan_enabled(self.free_graph_movement)
+                    .with_fit_to_screen_enabled(!self.free_graph_movement);
 
                 let mut view = egui_graphs::GraphView::<
                     _,
