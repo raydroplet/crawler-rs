@@ -1,8 +1,4 @@
-mod app;
-mod crawler;
-mod gui;
-
-use app::App;
+use crawler_rs::app::{App};
 
 fn main() {
     let app = App::new();

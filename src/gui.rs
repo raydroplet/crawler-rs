@@ -31,6 +31,7 @@ pub struct EguiView {
     node_details_expanded: bool,
     hubs_expanded: bool,
     broken_expanded: bool,
+    graph_expanded: bool,
 }
 
 impl EguiView {
@@ -90,6 +91,7 @@ puppis indagine femori, te fuit et.
             node_details_expanded: true,
             hubs_expanded: true,
             broken_expanded: true,
+            graph_expanded: true,
         }
     }
 
@@ -615,34 +617,54 @@ impl eframe::App for EguiView {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        let icon = if self.broken_expanded {
+                                        let icon = if self.graph_expanded {
                                             down_triangle_icon
                                         } else {
                                             left_triangle_icon
                                         };
                                         if ui.add(egui::Button::new(icon).frame(false)).clicked() {
-                                            self.broken_expanded = !self.broken_expanded;
+                                            self.graph_expanded = !self.graph_expanded;
                                         }
                                     },
                                 );
                             });
 
-                            egui::Grid::new("graph_details_grid")
-                                .num_columns(2)
-                                .striped(true)
-                                .spacing([40.0, 4.0])
-                                .show(ui, |ui| {
-                                    ui.label("Nodes");
-                                    add_stretched_right_cell(ui, |ui| {
-                                        ui.label("2934");
+                            if self.graph_expanded {
+                                ui.add_space(4.0);
+                                ui.separator();
+                                ui.add_space(4.0);
+                                //
+                                egui::Grid::new("graph_details_grid")
+                                    .num_columns(2)
+                                    .striped(true)
+                                    .spacing([40.0, 4.0])
+                                    .show(ui, |ui| {
+                                        ui.label("Nodes");
+                                        add_stretched_right_cell(ui, |ui| {
+                                            ui.label("2384");
+                                        });
+                                        ui.end_row();
+                                        //
+                                        ui.label("Links");
+                                        add_stretched_right_cell(ui, |ui| {
+                                            ui.label("3002");
+                                        });
+                                        ui.end_row();
+                                        //
                                     });
-                                    ui.end_row();
-                                    ui.label("Conncetions");
-                                    add_stretched_right_cell(ui, |ui| {
-                                        ui.label("3102");
-                                    });
-                                    ui.end_row();
+
+                                ui.add_space(8.0);
+
+                                ui.horizontal(|ui| {
+                                    // NOTE: icons needed
+                                    if ui.button("@ Center").clicked() {
+                                        self.free_graph_movement = !self.free_graph_movement;
+                                    }
+                                    if ui.button("@ Reorganize").clicked() {
+                                        Self::distribute_nodes_circle_generic(&mut self.graph);
+                                    }
                                 });
+                            }
                         });
                     });
             });
