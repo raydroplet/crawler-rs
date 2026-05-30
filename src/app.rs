@@ -28,12 +28,12 @@ impl App {
 
         //// actors
         let view = ViewEgui::new(app_response_rx, app_command_tx);
-        let crawler = WebCrawler::new()?; // reqwest::Error
+        let crawler = WebCrawler::new()?;
 
         //// threads + tokio runtime
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .build()?; // std::io::Error
+            .build()?;
 
         thread::spawn(move || {
             runtime.block_on(async {

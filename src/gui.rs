@@ -183,43 +183,66 @@ impl eframe::App for ViewEgui {
             .inner_margin(egui::Margin::symmetric(0, 0));
 
         // 2. Global Top Menu
-        egui::Panel::top("top_menu_bar")
-            .frame(menu_frame)
-            .show_inside(ui, |ui| {
-                egui::MenuBar::new().ui(ui, |ui| {
-                    ui.menu_button("File", |ui| {
-                        if ui.button("📂 Open Graph...").clicked() {
-                            println!("Open");
-                        }
-                        if ui.button("💾 Save State").clicked() {
-                            println!("Save");
-                        }
-                        ui.separator();
-                        if ui.button("❌ Exit").clicked() {
-                            ui.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                    });
+        if true {
+            // TODO: assert if this is centered correctly
+            egui::Panel::top("top_menu_bar")
+                .frame(menu_frame)
+                .show_inside(ui, |ui| {
+                    // 1. Get the total width available in the panel
+                    let available_width = ui.available_width();
 
-                    ui.menu_button("View", |ui| {
-                        if ui.button("🔄 Reset Layout").clicked() {
-                            println!("Reset");
+                    // 2. Estimate the width of your menu items.
+                    // You may need to tweak this number based on your font size and labels.
+                    // "File" + "View" + "Graph" ≈ 150px
+                    let estimated_menu_width = 120.0;
+
+                    // 3. Calculate the padding needed on the left to center it
+                    let left_padding = (available_width - estimated_menu_width) / 2.0;
+
+                    ui.horizontal(|ui| {
+                        // 4. Push the menu bar to the right by adding empty space
+                        if left_padding > 0.0 {
+                            ui.add_space(left_padding);
                         }
-                        if ui.button("⚙ Settings").clicked() {
-                            println!("Settings");
-                        }
-                    });
-                    ui.menu_button("Graph", |ui| {
-                        if ui.button("🔄 Center").clicked() {
-                            self.free_graph_movement = !self.free_graph_movement;
-                            println!("Center");
-                        }
-                        if ui.button("🔄 Reorganize").clicked() {
-                            Self::distribute_nodes_circle_generic(&mut self.graph);
-                            println!("Reorganize");
-                        }
+
+                        // 5. Draw the menu bar
+                        egui::MenuBar::new().ui(ui, |ui| {
+                            ui.menu_button("File", |ui| {
+                                if ui.button("📂 Open Graph...").clicked() {
+                                    println!("Open");
+                                }
+                                if ui.button("💾 Save State").clicked() {
+                                    println!("Save");
+                                }
+                                ui.separator();
+                                if ui.button("❌ Exit").clicked() {
+                                    ui.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                            });
+
+                            ui.menu_button("View", |ui| {
+                                if ui.button("🔄 Reset Layout").clicked() {
+                                    println!("Reset");
+                                }
+                                if ui.button("⚙ Settings").clicked() {
+                                    println!("Settings");
+                                }
+                            });
+
+                            ui.menu_button("Graph", |ui| {
+                                if ui.button("🔄 Center").clicked() {
+                                    self.free_graph_movement = !self.free_graph_movement;
+                                    println!("Center");
+                                }
+                                if ui.button("🔄 Reorganize").clicked() {
+                                    Self::distribute_nodes_circle_generic(&mut self.graph);
+                                    println!("Reorganize");
+                                }
+                            });
+                        });
                     });
                 });
-            });
+        }
 
         let panel_frame = egui::Frame::window(&ui.style());
 
@@ -296,44 +319,225 @@ impl eframe::App for ViewEgui {
                     .frame(egui::Frame::NONE)
                     .show_inside(ui, |ui| match self.left_tab {
                         LeftTab::Activity => {
-                            egui::ScrollArea::vertical()
-                                .auto_shrink([false, false])
+                            egui::Frame::NONE
+                                .fill(ui.visuals().extreme_bg_color)
+                                .inner_margin(egui::Margin::same(4))
                                 .show(ui, |ui| {
-                                    let history = vec![
-                                        ("12:04", "200", "/blog/getting-..."),
-                                        ("12:04", "200", "/docs/api/v2"),
-                                        ("12:03", "404", "/legacy/old-api"),
-                                        ("12:03", "301", "/home → /"),
-                                        ("12:03", "200", "/pricing"),
-                                    ];
-                                    for (time, code, path) in history {
-                                        ui.horizontal(|ui| {
-                                            ui.label(RichText::new(time).color(Color32::DARK_GRAY));
-                                            let code_color = if code.starts_with('2') {
-                                                Color32::GREEN
-                                            } else if code.starts_with('4') {
-                                                Color32::RED
-                                            } else {
-                                                Color32::YELLOW
-                                            };
-                                            ui.label(RichText::new(code).color(code_color));
-                                            ui.label(path);
+                                    egui::ScrollArea::vertical()
+                                        .auto_shrink([false, false]) // Forces scroll area to fill the panel height
+                                        .show(ui, |ui| {
+                                            let history = vec![
+                                                (
+                                                    "12:04",
+                                                    "200",
+                                                    "wikipedia.com",
+                                                    "/blog/getting-started-with-graphing-tool",
+                                                ),
+                                                ("12:05", "200", "wikipedia.com", "/docs/api"),
+                                                ("12:06", "301", "wikipedia.com", "/home"),
+                                                ("12:07", "404", "wikipedia.com", "/broken-link"),
+                                            ];
+
+                                            for (time, code, domain, path) in history {
+                                                ui.horizontal(|ui| {
+                                                    let code_color = if code.starts_with("2") {
+                                                        Color32::from_rgb(0, 100, 0)
+                                                    } else if code.starts_with("4") {
+                                                        Color32::from_rgb(100, 0, 0)
+                                                    } else {
+                                                        Color32::from_rgb(100, 100, 0)
+                                                    };
+
+                                                    // 1. Claim space on the left (Badge)
+                                                    ui.label(
+                                                        RichText::new(format!(" {} ", code))
+                                                            .background_color(code_color)
+                                                            .color(Color32::WHITE),
+                                                    );
+
+                                                    // 2. Anchor the rest of the layout to the right
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            // 3. Claim space on the right (Timestamp) FIRST
+                                                            ui.label(
+                                                                RichText::new(time)
+                                                                    .color(Color32::DARK_GRAY),
+                                                            );
+
+                                                            // 4. Fill the remaining middle space with the truncated address
+                                                            ui.with_layout(
+                                                                egui::Layout::left_to_right(
+                                                                    egui::Align::Center,
+                                                                ),
+                                                                |ui| {
+                                                                    ui.spacing_mut()
+                                                                        .item_spacing
+                                                                        .x = 0.0;
+                                                                    ui.label(domain);
+                                                                    let weak_color = ui
+                                                                        .visuals()
+                                                                        .weak_text_color();
+                                                                    ui.visuals_mut()
+                                                                        .override_text_color =
+                                                                        Some(weak_color);
+                                                                    ui.add(
+                                                                        egui::Label::new(path)
+                                                                            .truncate(),
+                                                                    );
+                                                                },
+                                                            );
+                                                        },
+                                                    );
+                                                });
+                                            }
                                         });
-                                    }
                                 });
                         }
+
                         LeftTab::Queue => {
-                            ui.label("Queue content goes here...");
+                            egui::Frame::NONE
+                                .fill(ui.visuals().extreme_bg_color)
+                                .inner_margin(egui::Margin::same(4))
+                                .show(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            // Queue data: (Depth, domain, path)
+                                            let queue_items = vec![
+                                        ("0", "wikipedia.com", "/entry-node"),
+                                        ("1", "wikipedia.com", "/first-hop-link"),
+                                        (
+                                            "2",
+                                            "wikipedia.com",
+                                            "/deep-link-that-is-very-long-to-test-truncation",
+                                        ),
+                                    ];
+
+                                            for (depth, domain, path) in queue_items {
+                                                ui.horizontal(|ui| {
+                                                    // Depth Badge (Blue)
+                                                    ui.label(
+                                                        RichText::new(format!(" D{} ", depth))
+                                                            .background_color(Color32::from_rgb(
+                                                                60, 60, 60,
+                                                            ))
+                                                            .color(Color32::WHITE),
+                                                    );
+
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            // Using a simple indicator instead of time, as it hasn't been crawled yet
+                                                            ui.label(
+                                                                RichText::new("⏳")
+                                                                    .color(Color32::DARK_GRAY),
+                                                            );
+
+                                                            ui.with_layout(
+                                                                egui::Layout::left_to_right(
+                                                                    egui::Align::Center,
+                                                                ),
+                                                                |ui| {
+                                                                    ui.spacing_mut()
+                                                                        .item_spacing
+                                                                        .x = 0.0;
+                                                                    ui.label(domain);
+                                                                    let weak_color = ui
+                                                                        .visuals()
+                                                                        .weak_text_color();
+                                                                    ui.visuals_mut()
+                                                                        .override_text_color =
+                                                                        Some(weak_color);
+                                                                    ui.add(
+                                                                        egui::Label::new(path)
+                                                                            .truncate(),
+                                                                    );
+                                                                },
+                                                            );
+                                                        },
+                                                    );
+                                                });
+                                            }
+                                        });
+                                });
                         }
+
                         LeftTab::Errors => {
-                            ui.label("Errors content goes here...");
+                            egui::Frame::NONE
+                                .fill(ui.visuals().extreme_bg_color)
+                                .inner_margin(egui::Margin::same(4))
+                                .show(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            // Error data: (domain, path, error_string)
+                                            let errors = vec![
+                                                ("wikipedia.com", "/some-broken-page", "Timeout"),
+                                                ("bad-domain.com", "/", "DNS Res"),
+                                                (
+                                                    "wikipedia.com",
+                                                    "/another-long-path-that-fails",
+                                                    "Refused",
+                                                ),
+                                            ];
+
+                                            for (domain, path, err_str) in errors {
+                                                ui.horizontal(|ui| {
+                                                    // Generic Error Badge
+                                                    ui.label(
+                                                        RichText::new(" ERR ")
+                                                            .background_color(Color32::from_rgb(
+                                                                120, 0, 0,
+                                                            ))
+                                                            .color(Color32::WHITE),
+                                                    );
+
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            // Display the error string on the right side instead of the timestamp
+                                                            ui.label(
+                                                                RichText::new(err_str)
+                                                                    .color(Color32::LIGHT_RED),
+                                                            );
+
+                                                            ui.with_layout(
+                                                                egui::Layout::left_to_right(
+                                                                    egui::Align::Center,
+                                                                ),
+                                                                |ui| {
+                                                                    ui.spacing_mut()
+                                                                        .item_spacing
+                                                                        .x = 0.0;
+                                                                    ui.label(domain);
+                                                                    let weak_color = ui
+                                                                        .visuals()
+                                                                        .weak_text_color();
+                                                                    ui.visuals_mut()
+                                                                        .override_text_color =
+                                                                        Some(weak_color);
+                                                                    ui.add(
+                                                                        egui::Label::new(path)
+                                                                            .truncate(),
+                                                                    );
+                                                                },
+                                                            );
+                                                        },
+                                                    );
+                                                });
+                                            }
+                                        });
+                                });
                         }
                     });
             });
-
-        let custom_panel_frame = egui::Frame::default()
-            .fill(ui.visuals().extreme_bg_color)
-            .inner_margin(egui::Margin::same(8));
 
         let cards_spacing = 4.0;
         let down_triangle_icon = "🔻";
@@ -346,16 +550,224 @@ impl eframe::App for ViewEgui {
             });
         }
 
-        // 4. Right Panel: Crawling Inspector (Sequential Cards)
-        egui::Panel::right("right_crawling_inspector")
-            .frame(custom_panel_frame)
-            .resizable(false)
-            .default_size(200.0)
+        // 1. Calculate the available space and subtract the right window's width
+        let right_window_width = 200.0;
+        let right_margin = 5.0;
+        // 150px (minimap) + 8px (inner frame margin) + 8px (bottom anchor margin) + 12px (visual gap)
+        let minimap_reserved_height = 178.0;
+
+        // 5. Central Panel
+        egui::CentralPanel::default()
+            .frame(graph_frame)
             .show_inside(ui, |ui| {
-                // auto_shrink([false, false]) ensures the scroll area claims the full width
-                // preventing horizontal jumping when scrollbars appear.
+                let central_rect = ui.max_rect();
+
+                if self.show_markdown_window {
+                    egui::Window::new("Markdown Source")
+                        .open(&mut self.show_markdown_window)
+                        .resizable(true)
+                        .collapsible(false)
+                        .constrain_to(central_rect)
+                        .default_size([500.0, 400.0])
+                        .show(ui.ctx(), |ui| {
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut self.markdown_text)
+                                        .font(egui::TextStyle::Monospace)
+                                        .code_editor()
+                                        .interactive(false)
+                                        .desired_width(f32::INFINITY),
+                                );
+                            });
+                        });
+                }
+
+                if self.show_outbound_window {
+                    let inspect_node = |id: u8| {};
+                    let node_button = |ui: &mut egui::Ui, label: &str, id: u8| {
+                        if ui.button(label).clicked() {
+                            println!("{}", id);
+                        }
+                    };
+
+                    egui::Window::new("Outbound Links")
+                        .open(&mut self.show_outbound_window)
+                        .resizable(true)
+                        .collapsible(false)
+                        .constrain_to(central_rect)
+                        .default_size([300.0, 200.0])
+                        .show(ui.ctx(), |ui| {
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                node_button(ui, "/docs/api/v3", 0);
+                                node_button(ui, "/changelog", 2);
+                                node_button(ui, "/pricing", 3);
+                                node_button(ui, "https://github.com/example/repo", 4);
+                            });
+                        });
+                }
+
+                ////////
+                let settings_navigation = &egui_graphs::SettingsNavigation::new()
+                    .with_zoom_and_pan_enabled(self.free_graph_movement)
+                    .with_fit_to_screen_enabled(!self.free_graph_movement);
+
+                let mut view = egui_graphs::GraphView::<
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    FruchtermanReingoldWithCenterGravityState,
+                    egui_graphs::LayoutForceDirected<
+                        egui_graphs::FruchtermanReingoldWithCenterGravity,
+                    >,
+                >::new(&mut self.graph)
+                .with_navigations(settings_navigation);
+
+                // 1. Trick the center calculation by expanding the LEFT boundary off-screen.
+                let mut virtual_rect = ui.available_rect_before_wrap();
+                virtual_rect.min.x -= right_window_width + right_margin;
+
+                // 2. Create the child UI with this shifted virtual rectangle
+                let mut graph_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(virtual_rect)
+                        .layout(*ui.layout()),
+                );
+
+                // 3. Constrain the visual drawing back to the actual central panel bounds
+                // This ensures the off-screen left expansion doesn't visually bleed
+                // over your left side-panel (Activity/Queue/Errors).
+                graph_ui.set_clip_rect(ui.clip_rect());
+
+                // 4. Render the graph
+                graph_ui.add(&mut view);
+                ////////
+
+                /////////////////// MINIMAP
+                let minimap_margin = 8.0;
+                egui::Window::new("Minimap Overlay")
+                    .anchor(
+                        egui::Align2::RIGHT_BOTTOM,
+                        [minimap_margin - 16.0, -minimap_margin],
+                    )
+                    .resizable(false)
+                    .collapsible(false)
+                    .constrain_to(central_rect)
+                    .title_bar(false)
+                    .frame(egui::Frame::window(&ui.style()).inner_margin(4.0))
+                    .show(ui.ctx(), |ui| {
+                        let minimap_size = egui::vec2(150.0, 150.0);
+                        let (response, painter) =
+                            ui.allocate_painter(minimap_size, egui::Sense::hover());
+
+                        painter.rect_filled(response.rect, 4.0, ui.visuals().extreme_bg_color);
+
+                        let mut min_pos = egui::Pos2::new(f32::INFINITY, f32::INFINITY);
+                        let mut max_pos = egui::Pos2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
+
+                        for idx in self.graph.g().node_indices() {
+                            if let Some(node) = self.graph.g().node_weight(idx) {
+                                let loc = node.location();
+                                min_pos = min_pos.min(loc);
+                                max_pos = max_pos.max(loc);
+                            }
+                        }
+
+                        if min_pos.x == f32::INFINITY {
+                            min_pos = egui::Pos2::ZERO;
+                            max_pos = egui::Pos2::ZERO;
+                        }
+
+                        let padding = 20.0;
+                        min_pos -= egui::vec2(padding, padding);
+                        max_pos += egui::vec2(padding, padding);
+
+                        let graph_size = max_pos - min_pos;
+                        let scale = if graph_size.x > 0.0 && graph_size.y > 0.0 {
+                            (minimap_size.x / graph_size.x).min(minimap_size.y / graph_size.y)
+                        } else {
+                            1.0
+                        };
+
+                        let graph_center = min_pos.to_vec2() + graph_size / 2.0;
+                        let offset = response.rect.center().to_vec2() - (graph_center * scale);
+
+                        let transform = |pos: egui::Pos2| -> egui::Pos2 {
+                            egui::Pos2::new(pos.x * scale, pos.y * scale) + offset
+                        };
+
+                        for edge_idx in self.graph.g().edge_indices() {
+                            if let Some((src, dst)) = self.graph.g().edge_endpoints(edge_idx) {
+                                if let (Some(s_node), Some(d_node)) = (
+                                    self.graph.g().node_weight(src),
+                                    self.graph.g().node_weight(dst),
+                                ) {
+                                    painter.line_segment(
+                                        [
+                                            transform(s_node.location()),
+                                            transform(d_node.location()),
+                                        ],
+                                        egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+                                    );
+                                }
+                            }
+                        }
+
+                        for idx in self.graph.g().node_indices() {
+                            if let Some(node) = self.graph.g().node_weight(idx) {
+                                let color = if node.selected() {
+                                    egui::Color32::WHITE
+                                } else {
+                                    egui::Color32::from_rgb(80, 200, 150)
+                                };
+
+                                painter.circle_filled(transform(node.location()), 1.5, color);
+                            }
+                        }
+                    });
+            });
+
+        // .frame(custom_panel_frame)
+        // .resizable(false)
+        // .default_size(200.0)
+        // .show_separator_line(false)
+        // .show_inside(ui, |ui| {
+
+        let y_offset = 26.0;
+        let margin_offset = right_margin as i8; // same value used for graph calculations
+        let margin = egui::Margin {
+            left: margin_offset,
+            right: margin_offset,
+            top: margin_offset,
+            bottom: margin_offset,
+        };
+        egui::Window::new("Right_Inspector_Window")
+            // Anchor to top right, with a 10px margin off the edges
+            .anchor(egui::Align2::RIGHT_TOP, [0.0, y_offset]) // WARN: y to match the top bar height
+            .resizable(false)
+            .collapsible(false)
+            .title_bar(false) // Hides the drag-bar so it looks like a built-in UI panel
+            .frame(
+                egui::Frame::NONE
+                    .fill(Color32::from_black_alpha(200)) // Slight transparency looks great over graphs
+                    .corner_radius(0.0)
+                    .inner_margin(margin),
+            )
+            .show(ui, |ui| {
+                ui.set_width(right_window_width); // Force the width
+
+                // Calculate the maximum allowed height so it doesn't overlap the minimap
+                let max_height = ui.ctx().content_rect().height()
+                    - y_offset
+                    - (margin_offset as f32)
+                    - minimap_reserved_height;
+
+                ui.set_max_height(max_height);
                 egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
+                    // [horizontal, vertical]: Allow vertical shrinking so it hugs the cards
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
                         let card_frame = egui::Frame::default()
                             .fill(ui.visuals().window_fill)
@@ -365,7 +777,7 @@ impl eframe::App for ViewEgui {
 
                         // --- SECTION 1: NODE ---
                         card_frame.show(ui, |ui| {
-                            ui.set_min_width(ui.available_width());
+                            ui.set_min_width(ui.available_width()); // WARN: what this line does?
 
                             ui.horizontal(|ui| {
                                 ui.heading("⏺ Node");
@@ -642,156 +1054,6 @@ impl eframe::App for ViewEgui {
                                 }
                             }
                         });
-                    });
-            });
-
-        // 5. Central Panel LAST
-        egui::CentralPanel::default()
-            .frame(graph_frame)
-            .show_inside(ui, |ui| {
-                let central_rect = ui.max_rect();
-
-                if self.show_markdown_window {
-                    egui::Window::new("Markdown Source")
-                        .open(&mut self.show_markdown_window)
-                        .resizable(true)
-                        .collapsible(false)
-                        .constrain_to(central_rect)
-                        .default_size([500.0, 400.0])
-                        .show(ui.ctx(), |ui| {
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut self.markdown_text)
-                                        .font(egui::TextStyle::Monospace)
-                                        .code_editor()
-                                        .interactive(false)
-                                        .desired_width(f32::INFINITY),
-                                );
-                            });
-                        });
-                }
-
-                if self.show_outbound_window {
-                    let inspect_node = |id: u8| {};
-                    let node_button = |ui: &mut egui::Ui, label: &str, id: u8| {
-                        if ui.button(label).clicked() {
-                            println!("{}", id);
-                        }
-                    };
-
-                    egui::Window::new("Outbound Links")
-                        .open(&mut self.show_outbound_window)
-                        .resizable(true)
-                        .collapsible(false)
-                        .constrain_to(central_rect)
-                        .default_size([300.0, 200.0])
-                        .show(ui.ctx(), |ui| {
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                node_button(ui, "/docs/api/v3", 0);
-                                node_button(ui, "/changelog", 2);
-                                node_button(ui, "/pricing", 3);
-                                node_button(ui, "https://github.com/example/repo", 4);
-                            });
-                        });
-                }
-
-                let settings_navigation = &egui_graphs::SettingsNavigation::new()
-                    .with_zoom_and_pan_enabled(self.free_graph_movement)
-                    .with_fit_to_screen_enabled(!self.free_graph_movement);
-
-                let mut view = egui_graphs::GraphView::<
-                    _,
-                    _,
-                    _,
-                    _,
-                    _,
-                    _,
-                    FruchtermanReingoldWithCenterGravityState,
-                    egui_graphs::LayoutForceDirected<
-                        egui_graphs::FruchtermanReingoldWithCenterGravity,
-                    >,
-                >::new(&mut self.graph)
-                .with_navigations(settings_navigation);
-
-                ui.add(&mut view);
-
-                /////////////////// MINIMAP
-                egui::Window::new("Minimap Overlay")
-                    .anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -16.0])
-                    .resizable(false)
-                    .collapsible(false)
-                    .constrain_to(central_rect)
-                    .title_bar(false)
-                    .frame(egui::Frame::window(&ui.style()).inner_margin(8.0))
-                    .show(ui.ctx(), |ui| {
-                        let minimap_size = egui::vec2(150.0, 150.0);
-                        let (response, painter) =
-                            ui.allocate_painter(minimap_size, egui::Sense::hover());
-
-                        painter.rect_filled(response.rect, 4.0, ui.visuals().extreme_bg_color);
-
-                        let mut min_pos = egui::Pos2::new(f32::INFINITY, f32::INFINITY);
-                        let mut max_pos = egui::Pos2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
-
-                        for idx in self.graph.g().node_indices() {
-                            if let Some(node) = self.graph.g().node_weight(idx) {
-                                let loc = node.location();
-                                min_pos = min_pos.min(loc);
-                                max_pos = max_pos.max(loc);
-                            }
-                        }
-
-                        if min_pos.x == f32::INFINITY {
-                            min_pos = egui::Pos2::ZERO;
-                            max_pos = egui::Pos2::ZERO;
-                        }
-
-                        let padding = 20.0;
-                        min_pos -= egui::vec2(padding, padding);
-                        max_pos += egui::vec2(padding, padding);
-
-                        let graph_size = max_pos - min_pos;
-                        let scale = if graph_size.x > 0.0 && graph_size.y > 0.0 {
-                            (minimap_size.x / graph_size.x).min(minimap_size.y / graph_size.y)
-                        } else {
-                            1.0
-                        };
-
-                        let graph_center = min_pos.to_vec2() + graph_size / 2.0;
-                        let offset = response.rect.center().to_vec2() - (graph_center * scale);
-
-                        let transform = |pos: egui::Pos2| -> egui::Pos2 {
-                            egui::Pos2::new(pos.x * scale, pos.y * scale) + offset
-                        };
-
-                        for edge_idx in self.graph.g().edge_indices() {
-                            if let Some((src, dst)) = self.graph.g().edge_endpoints(edge_idx) {
-                                if let (Some(s_node), Some(d_node)) = (
-                                    self.graph.g().node_weight(src),
-                                    self.graph.g().node_weight(dst),
-                                ) {
-                                    painter.line_segment(
-                                        [
-                                            transform(s_node.location()),
-                                            transform(d_node.location()),
-                                        ],
-                                        egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
-                                    );
-                                }
-                            }
-                        }
-
-                        for idx in self.graph.g().node_indices() {
-                            if let Some(node) = self.graph.g().node_weight(idx) {
-                                let color = if node.selected() {
-                                    egui::Color32::WHITE
-                                } else {
-                                    egui::Color32::from_rgb(80, 200, 150)
-                                };
-
-                                painter.circle_filled(transform(node.location()), 1.5, color);
-                            }
-                        }
                     });
             });
     }
