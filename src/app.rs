@@ -40,7 +40,11 @@ impl App {
             });
 
             scope.spawn(|| {
-                self.event_loop(view_command_rx, crawler_response_rx);
+                self.event_loop(
+                    view_command_rx,
+                    crawler_command_tx.clone(),
+                    crawler_response_rx,
+                );
             });
 
             let _ = ViewEgui::run(view);
@@ -49,53 +53,73 @@ impl App {
         Ok(())
     }
 
-    fn event_loop(&self,
+    fn event_loop(
+        &self,
         // NOTE: &self here
         view_command_rx: flume::Receiver<CrawlCommand>,
+        crawler_command_tx: flume::Sender<CrawlCommand>,
         crawler_response_rx: flume::Receiver<CrawlResponse>,
     ) {
         loop {
-            let to_break = false;
-            flume::Selector::new()
+            let to_break = flume::Selector::new()
                 .recv(&crawler_response_rx, |message| {
                     match message {
                         Ok(response) => match response {
                             CrawlResponse::Page(page) => {
+                                println!(
+                                    "received page: {} ({})",
+                                    page.domain,
+                                    page.discovered_links.len()
+                                );
                                 //
                             }
                             CrawlResponse::Queued(url) => {
+                                println!("queued page: {}", url);
                                 //
                             }
                         },
-                        Err(err) => {}
-                    }
-
-                    to_break
-                })
-                .recv(&view_command_rx, |message| {
-                    match message {
-                        Ok(command) => match command {
-                            CrawlCommand::RequestCrawl(request) => {
-                                println!(
-                                    "view_command request: {} ({})",
-                                    request.source, request.depth
-                                );
-                            }
-                            CrawlCommand::Terminate => {
-                                println!("view_command terminate");
-                                // TODO: notify crawler
-                            }
-                        },
                         Err(err) => {
-                            println!("view_command err: {}", err);
+                            println!("crawler_response err: {}", err);
+                            return true;
                         }
                     }
 
-                    to_break
+                    false
+                })
+                .recv(&view_command_rx, |message| {
+                    match message {
+                        Ok(command) => {
+                            let _ = crawler_command_tx.send(command.clone());
+
+                            // debug info
+                            if true {
+                                match command {
+                                    CrawlCommand::RequestCrawl(request) => {
+                                        println!(
+                                            "view_command request: {} ({})",
+                                            request.source, request.depth
+                                        );
+                                    }
+                                    CrawlCommand::Terminate => {
+                                        println!("view_command terminate");
+                                        return true;
+                                        // TODO: notify crawler
+                                    }
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            println!("view_command err: {}", err);
+                            return true;
+                        }
+                    }
+
+                    false
                 })
                 .wait();
 
             if to_break {
+                println!("breaking free of the App event_loop");
                 break;
             }
         }

@@ -1,4 +1,4 @@
-use reqwest::{Client, Url};
+use reqwest::{Client, Url, StatusCode};
 use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::error::Error;
@@ -10,6 +10,7 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 //---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
 // what the external world sees
 
+#[derive(Clone)]
 pub enum CrawlCommand {
     RequestCrawl(CrawlRequest), // starts a crawl of a defined depth
     Terminate,
@@ -22,6 +23,7 @@ pub enum CrawlResponse {
 
 ////////
 
+#[derive(Clone)]
 pub struct CrawlRequest {
     pub source: Url,
     pub depth: i32,
@@ -31,7 +33,7 @@ pub struct ParserResult {
     pub domain: Url,
     pub path: Option<Url>,
     pub depth: i32,
-    pub status: u32, // 404, 202, etc. WARN: is there a better representation than u32?
+    pub status: StatusCode,
     //
     pub timestamp_start: SystemTime,
     pub timestamp_end: SystemTime,
@@ -39,8 +41,12 @@ pub struct ParserResult {
     pub page_content: String,
     pub discovered_links: HashSet<Url>,
 }
-//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
-// (mostly) interal implementation
+
+pub struct WebCrawler {
+    client: Client,
+}
+
+///////
 
 const SIGNATURE: &str = "raydroplet";
 const REPOSITORY: &str = "crawler-rs";
@@ -58,9 +64,7 @@ enum ManagerEvent {
     // RequesterError(CrawlRequest, reqwest::Error),
 }
 
-pub struct WebCrawler {
-    client: Client,
-}
+///////
 
 impl WebCrawler {
     pub fn new() -> Result<Self, reqwest::Error> {
@@ -212,7 +216,6 @@ impl WebCrawler {
                     }
                 }
             }
-            println!("terminate crawler");
         }
     }
 
@@ -277,7 +280,7 @@ impl WebCrawler {
                     domain: request_result.source,
                     path: None,
                     depth: request_result.depth,
-                    status: 0, // WARN: undefined
+                    status: StatusCode::IM_A_TEAPOT,
                     //
                     timestamp_start: SystemTime::now(), // WARN: undefined
                     timestamp_end: SystemTime::now(),   // WARN: undefined
