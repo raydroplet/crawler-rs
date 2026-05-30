@@ -1,4 +1,6 @@
 // src/gui.rs
+use crate::crawler::{CrawlCommand, CrawlResponse};
+use crossbeam_channel as crossbeam;
 use eframe;
 use egui::{Color32, Pos2, RichText};
 use egui_graphs::{FruchtermanReingoldWithCenterGravityState, Layout};
@@ -19,7 +21,7 @@ enum LeftTab {
 
 //////////////////
 
-pub struct EguiView {
+pub struct ViewEgui {
     graph: egui_graphs::Graph<(), (), Undirected>,
     pub show_markdown_window: bool,
     pub show_outbound_window: bool,
@@ -32,54 +34,26 @@ pub struct EguiView {
     hubs_expanded: bool,
     broken_expanded: bool,
     graph_expanded: bool,
+    //
+    crawler_rx: crossbeam::Receiver<CrawlResponse>,
+    crawler_tx: crossbeam::Sender<CrawlCommand>,
 }
 
-impl EguiView {
-    pub fn new() -> Self {
+impl ViewEgui {
+    pub fn new(
+        app_response_rx: crossbeam::Receiver<CrawlResponse>,
+        app_command_tx: crossbeam::Sender<CrawlCommand>,
+    ) -> Self {
         let mut graph = Self::generate_basic_graph();
         Self::distribute_nodes_circle_generic(&mut graph);
 
         let text = "# Regnata removete motis patris
 
-## Quid atque
-
 Lorem markdownum finibus memorique ignis per alvo longeque dea eburnas serior,
 eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
 
 > Ad Philammon viarum genitas nullosque cervicis legem; per simul simulantis
-> ignisque solvo num; tellus sequitur: oro. Quibus adspexisse Ilios. Mentisque
-> vitae Saturnia; quidem resque squamea contingere curvamine artesque!
-
-## Fretum prohibet virtute una
-
-Et caput idem, ullo est ventusve suique deos Horamque stultos; tuta. Nos
-[cognoscere](#adversaque-pulchrior-membra-vultu) vult bellatricemque timidum me
-Haemum locorum remotus an iubent segetis **erat clauditur**. Patriaeque murice
-et o densis `memory_cluster_xhtml` admonuit mare carcere armentum effundite
-sacrificos magnum.
-
-## Inquit quae Me terra
-
-Quae `soap_quicktime` cacumina temptamina in Symplegadas tenebrae, sanguine
-iactatis iussit. Scire coeptaeque altius data umbra praerupta cinctum serpentis
-tosti et dos parantem hinc et ambit si quaerit ab quos maternos.
-
-- Ille omnia
-- Uti aere et
-- Aevo quae fluctus
-- Aries latratus levare et membra curvataque fatigatum
-- Auroque huic tanti cum modo quaerente creatis
-
-## Adversaque Pulchrior membra vultu
-
-Locorum tenebrasque fumant arguitur, tetigere in boumque coepit consequitur olim
-magnus tu inquit ut draconem haurit ut. Natos ulla velut Faunine, rorantia
-puppis indagine femori, te fuit et.
-
-1. Primum quod
-2. Viam tua patetis miratur saucius glomerataque mater
-3. Felicissima iamque ungues manibus reseratis hic subito
-4. Vulgatos mulcendaque ausum Emathiique culmina vitae";
+> ignisque solvo num; tellus sequitur: oro. Quibus adspexisse Ilios. Mentisque";
 
         Self {
             graph: graph,
@@ -92,10 +66,13 @@ puppis indagine femori, te fuit et.
             hubs_expanded: true,
             broken_expanded: true,
             graph_expanded: true,
+            //
+            crawler_rx: app_response_rx,
+            crawler_tx: app_command_tx,
         }
     }
 
-    pub fn run(&self) -> eframe::Result<()> {
+    pub fn run(view: ViewEgui) -> eframe::Result<()> {
         let mut options = eframe::NativeOptions::default();
 
         options.viewport = egui::ViewportBuilder::default()
@@ -106,7 +83,7 @@ puppis indagine femori, te fuit et.
         eframe::run_native(
             "egui_graphs_basic_demo",
             options,
-            Box::new(|_context| Ok(Box::new(EguiView::new()))),
+            Box::new(|_context| Ok(Box::new(view))),
         )
     }
 
@@ -129,7 +106,7 @@ puppis indagine femori, te fuit et.
     }
 }
 
-impl EguiView {
+impl ViewEgui {
     #[allow(dead_code)]
     fn generate_basic_petgraph() -> StableGraph<(), (), Undirected, DefaultIx> {
         let mut g: StableGraph<(), (), Undirected> = StableGraph::default();
@@ -195,7 +172,7 @@ impl EguiView {
     }
 }
 
-impl eframe::App for EguiView {
+impl eframe::App for ViewEgui {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let menu_frame = egui::Frame::default()
             .fill(ui.visuals().extreme_bg_color)
@@ -497,6 +474,64 @@ impl eframe::App for EguiView {
 
                         ui.add_space(cards_spacing);
 
+                        card_frame.show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.heading("⬣ Graph");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let icon = if self.graph_expanded {
+                                            down_triangle_icon
+                                        } else {
+                                            left_triangle_icon
+                                        };
+                                        if ui.add(egui::Button::new(icon).frame(false)).clicked() {
+                                            self.graph_expanded = !self.graph_expanded;
+                                        }
+                                    },
+                                );
+                            });
+
+                            if self.graph_expanded {
+                                ui.add_space(4.0);
+                                ui.separator();
+                                ui.add_space(4.0);
+                                //
+                                egui::Grid::new("graph_details_grid")
+                                    .num_columns(2)
+                                    .striped(true)
+                                    .spacing([40.0, 4.0])
+                                    .show(ui, |ui| {
+                                        ui.label("Nodes");
+                                        add_stretched_right_cell(ui, |ui| {
+                                            ui.label("2384");
+                                        });
+                                        ui.end_row();
+                                        //
+                                        ui.label("Links");
+                                        add_stretched_right_cell(ui, |ui| {
+                                            ui.label("3002");
+                                        });
+                                        ui.end_row();
+                                        //
+                                    });
+
+                                ui.add_space(8.0);
+
+                                ui.horizontal(|ui| {
+                                    // NOTE: icons needed
+                                    if ui.button("@ Center").clicked() {
+                                        self.free_graph_movement = !self.free_graph_movement;
+                                    }
+                                    if ui.button("@ Reorganize").clicked() {
+                                        Self::distribute_nodes_circle_generic(&mut self.graph);
+                                    }
+                                });
+                            }
+                        });
+
+                        ui.add_space(cards_spacing);
+
                         // --- SECTION 2: HUBS ---
                         card_frame.show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
@@ -605,65 +640,6 @@ impl eframe::App for EguiView {
                                         });
                                     });
                                 }
-                            }
-                        });
-
-                        ui.add_space(cards_spacing);
-
-                        // NOTE:
-                        card_frame.show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.heading("⬣ Graph");
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let icon = if self.graph_expanded {
-                                            down_triangle_icon
-                                        } else {
-                                            left_triangle_icon
-                                        };
-                                        if ui.add(egui::Button::new(icon).frame(false)).clicked() {
-                                            self.graph_expanded = !self.graph_expanded;
-                                        }
-                                    },
-                                );
-                            });
-
-                            if self.graph_expanded {
-                                ui.add_space(4.0);
-                                ui.separator();
-                                ui.add_space(4.0);
-                                //
-                                egui::Grid::new("graph_details_grid")
-                                    .num_columns(2)
-                                    .striped(true)
-                                    .spacing([40.0, 4.0])
-                                    .show(ui, |ui| {
-                                        ui.label("Nodes");
-                                        add_stretched_right_cell(ui, |ui| {
-                                            ui.label("2384");
-                                        });
-                                        ui.end_row();
-                                        //
-                                        ui.label("Links");
-                                        add_stretched_right_cell(ui, |ui| {
-                                            ui.label("3002");
-                                        });
-                                        ui.end_row();
-                                        //
-                                    });
-
-                                ui.add_space(8.0);
-
-                                ui.horizontal(|ui| {
-                                    // NOTE: icons needed
-                                    if ui.button("@ Center").clicked() {
-                                        self.free_graph_movement = !self.free_graph_movement;
-                                    }
-                                    if ui.button("@ Reorganize").clicked() {
-                                        Self::distribute_nodes_circle_generic(&mut self.graph);
-                                    }
-                                });
                             }
                         });
                     });

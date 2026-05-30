@@ -10,11 +10,6 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 //---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
 // what the external world sees
 
-pub struct CrawlRequest {
-    pub source: Url,
-    pub depth: i32,
-}
-
 pub enum CrawlCommand {
     RequestCrawl(CrawlRequest), // starts a crawl of a defined depth
     Terminate,
@@ -25,16 +20,11 @@ pub enum CrawlResponse {
     Queued(Url),
 }
 
-//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
-// (mostly) interal implementation
+////////
 
-const SIGNATURE: &str = "raydroplet";
-const REPOSITORY: &str = "crawler-rs";
-
-struct RequesterResult {
-    source: Url,
-    depth: i32,
-    html_body: String,
+pub struct CrawlRequest {
+    pub source: Url,
+    pub depth: i32,
 }
 
 pub struct ParserResult {
@@ -49,6 +39,17 @@ pub struct ParserResult {
     pub page_content: String,
     pub discovered_links: HashSet<Url>,
 }
+//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
+// (mostly) interal implementation
+
+const SIGNATURE: &str = "raydroplet";
+const REPOSITORY: &str = "crawler-rs";
+
+struct RequesterResult {
+    source: Url,
+    depth: i32,
+    html_body: String,
+}
 
 enum ManagerEvent {
     Parsed(ParserResult),
@@ -58,12 +59,11 @@ enum ManagerEvent {
 }
 
 pub struct WebCrawler {
-    manager_command_tx: mpsc::Sender<CrawlCommand>,
+    client: Client,
 }
 
 impl WebCrawler {
-    pub fn new(sender: mpsc::Sender<CrawlResponse>) -> Result<Self, reqwest::Error> {
-        //--- client initialization ---//
+    pub fn new() -> Result<Self, reqwest::Error> {
         let client = Client::builder()
             .user_agent(format!(
                 "Crawler-rs/0.1 (https://github.com/{}/{}",
@@ -73,9 +73,15 @@ impl WebCrawler {
             .timeout(Duration::from_secs(30))
             .build()?; // may fail early
 
-        //--- tasks configuration and wiring ---//
+        Ok(Self { client: client })
+    }
+
+    pub async fn run(
+       &self,
+        crawler_command_rx: mpsc::Receiver<CrawlCommand>,
+        crawler_response_tx: mpsc::Sender<CrawlResponse>,
+    ) {
         let (manager_event_tx, manager_event_rx) = mpsc::channel(1024);
-        let (manager_command_tx, manager_command_rx) = mpsc::channel(1024);
         let (parser_tx, parser_rx) = mpsc::channel(1024);
 
         // spawns the parser
@@ -86,36 +92,29 @@ impl WebCrawler {
             }
         });
 
-        // spawns the command/event manager
-        tokio::spawn(async move {
-            Self::manager_actor(
-                manager_command_rx,
-                manager_event_rx,
-                parser_tx,
-                sender,
-                client,
-            )
-            .await;
-        });
-
-        //--- instantiation ---//
-        Ok(Self {
-            manager_command_tx: manager_command_tx,
-        })
+        Self::manager_actor(
+            crawler_command_rx,
+            crawler_response_tx,
+            manager_event_rx,
+            parser_tx,
+            self.client.clone(),
+        )
+        .await;
     }
 
-    pub fn send_blocking(
-        &self,
-        command: CrawlCommand,
-    ) -> Result<(), mpsc::error::SendError<CrawlCommand>> {
-        self.manager_command_tx.blocking_send(command)
-    }
+    // pub fn send_blocking(
+    //     &self,
+    //     command: CrawlCommand,
+    // ) -> Result<(), mpsc::error::SendError<CrawlCommand>> {
+    //     self.crawler_command_tx.blocking_send(command)
+    // }
 
     async fn manager_actor(
         mut command_rx: mpsc::Receiver<CrawlCommand>,
+        response_tx: mpsc::Sender<CrawlResponse>,
+        //
         mut event_rx: mpsc::Receiver<ManagerEvent>,
         parser_tx: mpsc::Sender<RequesterResult>,
-        sender: mpsc::Sender<CrawlResponse>,
         client: reqwest::Client,
     ) {
         //--- handle commands ---//
@@ -181,7 +180,7 @@ impl WebCrawler {
 
                                     // notify a new task is being queued
                                     let response = CrawlResponse::Queued(link.clone());
-                                    if sender.send(response).await.is_err() {
+                                    if response_tx.send(response).await.is_err() {
                                         break; // external client disconnected
                                     };
 
@@ -202,7 +201,7 @@ impl WebCrawler {
 
                             // 2. sends back the result of a crawled page using the 'sender'
                             let response = CrawlResponse::Page(parser_result);
-                            if sender.send(response).await.is_err() {
+                            if response_tx.send(response).await.is_err() {
                                 // the external client disconnected without sendind a terminate command.
                                 break;
                             };
@@ -280,7 +279,7 @@ impl WebCrawler {
                     status: 0, // WARN: undefined
                     //
                     timestamp_start: SystemTime::now(), // WARN: undefined
-                    timestamp_end: SystemTime::now(), // WARN: undefined
+                    timestamp_end: SystemTime::now(),   // WARN: undefined
                     //
                     page_content: request_result.html_body,
                     discovered_links: urls,
@@ -364,82 +363,3 @@ impl WebCrawler {
         extracted_urls
     }
 }
-
-async fn crawling_test() {
-    let (tx, mut rx) = mpsc::channel(1024);
-
-    // 1. Wrap the crawler in an Arc so we can share ownership
-    let crawler = Arc::new(WebCrawler::new(tx).expect("Failed to initialize crawler"));
-
-    let request = CrawlRequest {
-        source: Url::parse("https://example.com").expect("Invalid URL"),
-        depth: 2,
-    };
-
-    // 2. Clone the Arc pointer (this does not clone the crawler itself)
-    let crawler_clone = crawler.clone();
-
-    // 3. Move the clone into the blocking task
-    tokio::task::spawn_blocking(move || {
-        if crawler_clone
-            .send_blocking(CrawlCommand::RequestCrawl(request))
-            .is_err()
-        {
-            println!("Failed to send initial request.");
-        }
-    });
-
-    println!("Crawler started. Waiting for results...\n");
-
-    let timeout_duration = Duration::from_secs(10);
-
-    loop {
-        match tokio::time::timeout(timeout_duration, rx.recv()).await {
-            Ok(Some(response)) => match response {
-                CrawlResponse::Page(parser_result) => {
-                    println!("========================================");
-                    println!("Source URL  : {}", parser_result.domain);
-                    println!("Depth Left  : {}", parser_result.depth);
-                    println!("HTML Size   : {} bytes", parser_result.page_content.len());
-                    println!("Links Found : {}", parser_result.discovered_links.len());
-                    println!("--- Links ---");
-
-                    for link in parser_result.discovered_links {
-                        println!(" -> {}", link);
-                    }
-                }
-                CrawlResponse::Queued(url) => {
-                    // ignore.
-                }
-            },
-            Ok(None) => {
-                println!("Crawler finished processing all links.");
-                break;
-            }
-            Err(_) => {
-                println!(
-                    "\nNo new pages crawled for {} seconds. Timing out and shutting down.",
-                    timeout_duration.as_secs()
-                );
-                break;
-            }
-        }
-    }
-
-    // 4. Ensure the original crawler lives until the end of main
-    drop(crawler);
-    println!("Ending.\n");
-}
-
-#[tokio::main]
-async fn main() {
-    crawling_test().await;
-}
-
-// TODO:
-// 1. [-] create a reqwest client and pass it for tasks to use
-// 2. [x] The User-Agent Header (Avoiding Blocks)
-// 3. [x] timeouts
-// 4. [ ] handle gttp 404 or 500, as they will simply return the html error page
-// 5. [ ] respect robots.txt
-// 6. [ ] implement delays for each individual website
