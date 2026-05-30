@@ -77,9 +77,9 @@ impl WebCrawler {
     }
 
     pub async fn run(
-       &self,
-        crawler_command_rx: mpsc::Receiver<CrawlCommand>,
-        crawler_response_tx: mpsc::Sender<CrawlResponse>,
+        &self,
+        crawler_command_rx: flume::Receiver<CrawlCommand>,
+        crawler_response_tx: flume::Sender<CrawlResponse>,
     ) {
         let (manager_event_tx, manager_event_rx) = mpsc::channel(1024);
         let (parser_tx, parser_rx) = mpsc::channel(1024);
@@ -110,8 +110,8 @@ impl WebCrawler {
     // }
 
     async fn manager_actor(
-        mut command_rx: mpsc::Receiver<CrawlCommand>,
-        response_tx: mpsc::Sender<CrawlResponse>,
+        mut command_rx: flume::Receiver<CrawlCommand>,
+        response_tx: flume::Sender<CrawlResponse>,
         //
         mut event_rx: mpsc::Receiver<ManagerEvent>,
         parser_tx: mpsc::Sender<RequesterResult>,
@@ -126,8 +126,8 @@ impl WebCrawler {
 
         loop {
             tokio::select! {
-                cmd_opt = command_rx.recv() => {
-                    let Some(command) = cmd_opt else {
+                cmd_opt = command_rx.recv_async() => {
+                    let Ok(command) = cmd_opt else {
                         break; // channel closed. break the loop.
                     };
 
@@ -180,7 +180,7 @@ impl WebCrawler {
 
                                     // notify a new task is being queued
                                     let response = CrawlResponse::Queued(link.clone());
-                                    if response_tx.send(response).await.is_err() {
+                                    if response_tx.send_async(response).await.is_err() {
                                         break; // external client disconnected
                                     };
 
@@ -201,7 +201,7 @@ impl WebCrawler {
 
                             // 2. sends back the result of a crawled page using the 'sender'
                             let response = CrawlResponse::Page(parser_result);
-                            if response_tx.send(response).await.is_err() {
+                            if response_tx.send_async(response).await.is_err() {
                                 // the external client disconnected without sendind a terminate command.
                                 break;
                             };
@@ -212,6 +212,7 @@ impl WebCrawler {
                     }
                 }
             }
+            println!("terminate crawler");
         }
     }
 

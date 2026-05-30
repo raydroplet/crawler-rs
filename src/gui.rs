@@ -1,5 +1,5 @@
 // src/gui.rs
-use crate::crawler::{CrawlCommand, CrawlResponse};
+use crate::crawler::{CrawlCommand, CrawlResponse, CrawlRequest};
 use crossbeam_channel as crossbeam;
 use eframe;
 use egui::{Color32, Pos2, RichText};
@@ -9,6 +9,7 @@ use petgraph::{
     stable_graph::{DefaultIx, StableGraph},
 };
 use rand::RngExt;
+use reqwest::Url;
 
 ///////////////////
 
@@ -35,14 +36,18 @@ pub struct ViewEgui {
     broken_expanded: bool,
     graph_expanded: bool,
     //
-    crawler_rx: crossbeam::Receiver<CrawlResponse>,
-    crawler_tx: crossbeam::Sender<CrawlCommand>,
+    show_crawl_window: bool,
+    crawl_input_url: String,
+    crawl_input_depth: i32,
+    //
+    crawler_rx: flume::Receiver<CrawlResponse>,
+    crawler_tx: flume::Sender<CrawlCommand>,
 }
 
 impl ViewEgui {
     pub fn new(
-        app_response_rx: crossbeam::Receiver<CrawlResponse>,
-        app_command_tx: crossbeam::Sender<CrawlCommand>,
+        app_response_rx: flume::Receiver<CrawlResponse>,
+        app_command_tx: flume::Sender<CrawlCommand>,
     ) -> Self {
         let mut graph = Self::generate_basic_graph();
         Self::distribute_nodes_circle_generic(&mut graph);
@@ -66,6 +71,10 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             hubs_expanded: true,
             broken_expanded: true,
             graph_expanded: true,
+            //
+            show_crawl_window: false,
+            crawl_input_url: String::from("https://"),
+            crawl_input_depth: 2,
             //
             crawler_rx: app_response_rx,
             crawler_tx: app_command_tx,
@@ -194,7 +203,7 @@ impl eframe::App for ViewEgui {
                     // 2. Estimate the width of your menu items.
                     // You may need to tweak this number based on your font size and labels.
                     // "File" + "View" + "Graph" ≈ 150px
-                    let estimated_menu_width = 120.0;
+                    let estimated_menu_width = 150.0;
 
                     // 3. Calculate the padding needed on the left to center it
                     let left_padding = (available_width - estimated_menu_width) / 2.0;
@@ -239,26 +248,74 @@ impl eframe::App for ViewEgui {
                                     println!("Reorganize");
                                 }
                             });
+                            if ui.button("Crawl").clicked() {
+                                self.show_crawl_window = true;
+                            };
+                            if ui.button("About").clicked() {
+                                // TODO:
+                            };
                         });
                     });
                 });
         }
 
         let panel_frame = egui::Frame::window(&ui.style());
+        let mut close_window = false;
 
-        let mut show_crawl_window = false;
-        if show_crawl_window {
+        if self.show_crawl_window {
             egui::Window::new("Start Crawl")
-                .open(&mut show_crawl_window)
+                .open(&mut self.show_crawl_window) // Borrows the variable here
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ui.ctx(), |ui| {
                     ui.label("Configure your crawling job here.");
                     ui.add_space(8.0);
-                    if ui.button("Start New Session").clicked() {}
-                    if ui.button("End Session (Test)").clicked() {}
+
+                    egui::Grid::new("crawl_input_grid")
+                        .num_columns(2)
+                        .spacing([10.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Root URL:");
+                            ui.text_edit_singleline(&mut self.crawl_input_url);
+                            ui.end_row();
+
+                            ui.label("Depth:");
+                            ui.add(egui::DragValue::new(&mut self.crawl_input_depth).range(0..=10));
+                            ui.end_row();
+                        });
+
+                    ui.add_space(12.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("▶ Start Session").clicked() {
+
+                            let Ok(url) = Url::parse(&self.crawl_input_url) else {
+                                println!("failed to parse"); // TODO: provide a better warning
+                                return;
+                            };
+
+                            let request = CrawlRequest { 
+                                source: url,
+                                depth: self.crawl_input_depth,
+                            };
+                            let _ = self.crawler_tx.send(CrawlCommand::RequestCrawl(request));
+
+                            // close_window = true;
+                        }
+
+                        if ui.button("⏹ End Session").clicked() {
+                            let _ = self.crawler_tx.send(CrawlCommand::Terminate);
+
+                            // close_window = true;
+                        }
+                    });
                 });
+        }
+
+        // 3. Safely update the struct field now that the borrow is gone
+        if close_window {
+            self.show_crawl_window = false;
         }
 
         // 3. Left Panel
@@ -283,14 +340,18 @@ impl eframe::App for ViewEgui {
                         ui.columns(2, |cols| {
                             cols[0].group(|ui| {
                                 ui.vertical_centered_justified(|ui| {
-                                    ui.heading(RichText::new("47").color(Color32::LIGHT_BLUE));
-                                    ui.label("crawled");
+                                    ui.heading(
+                                        RichText::new("47"), /* .color(Color32::LIGHT_BLUE) */
+                                    );
+                                    ui.label(RichText::new("Crawled").weak());
                                 });
                             });
                             cols[1].group(|ui| {
                                 ui.vertical_centered_justified(|ui| {
-                                    ui.heading(RichText::new("29").color(Color32::YELLOW));
-                                    ui.label("queued");
+                                    ui.heading(
+                                        RichText::new("29"), /* .color(Color32::YELLOW) */
+                                    );
+                                    ui.label(RichText::new("Queued").weak());
                                 });
                             });
                         });
@@ -300,14 +361,16 @@ impl eframe::App for ViewEgui {
                         ui.columns(2, |cols| {
                             cols[0].group(|ui| {
                                 ui.vertical_centered_justified(|ui| {
-                                    ui.heading(RichText::new("3").color(Color32::LIGHT_RED));
-                                    ui.label("errors");
+                                    ui.heading(
+                                        RichText::new("3"), /* .color(Color32::LIGHT_RED) */
+                                    );
+                                    ui.label(RichText::new("Errors").weak());
                                 });
                             });
                             cols[1].group(|ui| {
                                 ui.vertical_centered_justified(|ui| {
                                     ui.heading("340ms");
-                                    ui.label("avg");
+                                    ui.label(RichText::new("Average").weak());
                                 });
                             });
                         });
