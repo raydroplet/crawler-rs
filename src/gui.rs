@@ -38,7 +38,7 @@ pub struct ViewEgui {
     //
     show_crawl_window: bool,
     crawl_input_url: String,
-    crawl_input_depth: i32,
+    crawl_input_depth: i8,
     //
     crawler_rx: flume::Receiver<CrawlResponse>,
     crawler_tx: flume::Sender<CrawlCommand>,
@@ -73,8 +73,8 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             graph_expanded: true,
             //
             show_crawl_window: false,
-            crawl_input_url: String::from("https://"),
-            crawl_input_depth: 2,
+            crawl_input_url: String::from("https://httpbin.org/"),
+            crawl_input_depth: 0,
             //
             crawler_rx: app_response_rx,
             crawler_tx: app_command_tx,
@@ -179,10 +179,13 @@ impl ViewEgui {
         type S3 = egui_graphs::FruchtermanReingoldState;
         let _view = egui_graphs::GraphView::<_, _, _, _, _, _, S3, L3>::new(&mut self.graph);
     }
-}
 
-impl eframe::App for ViewEgui {
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+    ////////
+    fn poll_events(&mut self) {
+
+    }
+
+    fn render_ui(&mut self, ui: &mut egui::Ui) {
         let menu_frame = egui::Frame::default()
             .fill(ui.visuals().extreme_bg_color)
             .inner_margin(egui::Margin::symmetric(8, 4));
@@ -299,7 +302,7 @@ impl eframe::App for ViewEgui {
                                 source: url,
                                 depth: self.crawl_input_depth,
                             };
-                            let _ = self.crawler_tx.send(CrawlCommand::RequestCrawl(request));
+                            let _ = self.crawler_tx.send(CrawlCommand::Request(request));
 
                             // close_window = true;
                         }
@@ -1119,5 +1122,12 @@ impl eframe::App for ViewEgui {
                         });
                     });
             });
+    }
+}
+
+impl eframe::App for ViewEgui {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.poll_events();
+        self.render_ui(ui);
     }
 }

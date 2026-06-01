@@ -1,42 +1,88 @@
-use reqwest::{Client, Url, StatusCode};
+use reqwest::{Client, StatusCode, Url};
 use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::error::Error;
+use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::{Semaphore, mpsc};
+use tokio::task::JoinError;
+use std::time::{self, Instant};
 
 //---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
 // what the external world sees
 
 #[derive(Clone)]
 pub enum CrawlCommand {
-    RequestCrawl(CrawlRequest), // starts a crawl of a defined depth
+    Request(CrawlRequest), // starts a crawl of a defined depth
     Terminate,
 }
 
+// TODO: only inform a queued page if sure you gonna crawl it (silently skip duplicates)
+// avoid overuse of skipped
 pub enum CrawlResponse {
     Page(ParserResult), // occasionally returns the result of a single page crawl
-    Queued(Url),
+    Queued(Url, usize), // url, number of queued links in it
+    Skipped(Url),
+    Error(Url, CrawlError),
 }
 
-////////
+////
+
+// TODO: define the possible error types
+#[derive(Debug, Clone)]
+pub enum CrawlError {
+    Network(String),
+    Timeout,
+    ParseHtml(String),
+    TaskPanic(String),
+    Other(String),
+}
+
+// TODO: test
+impl fmt::Display for CrawlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CrawlError::Network(msg) => write!(f, "Network error: {}", msg),
+            CrawlError::Timeout => write!(f, "Connection timed out"),
+            CrawlError::ParseHtml(msg) => write!(f, "HTML parsing failed: {}", msg),
+            CrawlError::TaskPanic(msg) => write!(f, "Tokio task panic: {}", msg),
+            CrawlError::Other(msg) => write!(f, "Unknown error: {}", msg),
+        }
+    }
+}
+
+impl CrawlError {
+    pub fn name(&self) -> &'static str {
+        match self {
+            CrawlError::Network(_) => "Network",
+            CrawlError::Timeout => "Timeout",
+            CrawlError::ParseHtml(_) => "Parse",
+            CrawlError::TaskPanic(_) => "Task",
+            CrawlError::Other(_) => "Other",
+        }
+    }
+}
+
+impl Error for CrawlError {
+    // default method implementations.
+}
+
+////
 
 #[derive(Clone)]
 pub struct CrawlRequest {
     pub source: Url,
-    pub depth: i32,
+    pub depth: i8,
 }
 
 pub struct ParserResult {
-    pub domain: Url,
-    pub path: Option<Url>,
-    pub depth: i32,
+    pub url: Url,
+    pub depth: i8,
     pub status: StatusCode,
     //
-    pub timestamp_start: SystemTime,
-    pub timestamp_end: SystemTime,
+    pub timestamp_start: Instant,
+    pub timestamp_end: Instant,
     //
     pub page_content: String,
     pub discovered_links: HashSet<Url>,
@@ -46,22 +92,24 @@ pub struct WebCrawler {
     client: Client,
 }
 
-///////
+////////
 
 const SIGNATURE: &str = "raydroplet";
 const REPOSITORY: &str = "crawler-rs";
 
 struct RequesterResult {
     source: Url,
-    depth: i32,
+    depth: i8,
     html_body: String,
 }
 
 enum ManagerEvent {
-    Parsed(ParserResult),
-    Error(),
-    // NOTE: alike command and events, errors should be sent from it's own channel, but I will avoid this for now
-    // RequesterError(CrawlRequest, reqwest::Error),
+    Request(CrawlRequest),
+    Branch(Url, i8, HashSet<Url>),
+    Skipped(Url),
+    Error(Url, CrawlError),
+    TaskPanic(JoinError),
+    Terminate,
 }
 
 ///////
@@ -85,48 +133,18 @@ impl WebCrawler {
         crawler_command_rx: flume::Receiver<CrawlCommand>,
         crawler_response_tx: flume::Sender<CrawlResponse>,
     ) {
-        let (manager_event_tx, manager_event_rx) = mpsc::channel(1024);
-        let (parser_tx, parser_rx) = mpsc::channel(1024);
-
-        // spawns the parser
-        tokio::spawn({
-            let manager_tx = manager_event_tx.clone();
-            async move {
-                Self::parser_actor(parser_rx, manager_tx).await;
-            }
-        });
-
-        Self::manager_actor(
-            crawler_command_rx,
-            crawler_response_tx,
-            manager_event_rx,
-            parser_tx,
-            self.client.clone(),
-        )
-        .await;
+        Self::event_loop(crawler_command_rx, crawler_response_tx, self.client.clone()).await;
     }
 
-    // pub fn send_blocking(
-    //     &self,
-    //     command: CrawlCommand,
-    // ) -> Result<(), mpsc::error::SendError<CrawlCommand>> {
-    //     self.crawler_command_tx.blocking_send(command)
-    // }
-
-    async fn manager_actor(
-        mut command_rx: flume::Receiver<CrawlCommand>,
+    // TODO: add a per-website request delay
+    async fn event_loop(
+        command_rx: flume::Receiver<CrawlCommand>,
         response_tx: flume::Sender<CrawlResponse>,
-        //
-        mut event_rx: mpsc::Receiver<ManagerEvent>,
-        parser_tx: mpsc::Sender<RequesterResult>,
         client: reqwest::Client,
     ) {
-        //--- handle commands ---//
         let mut visited = HashSet::new();
-        // we allow limited simultaneous network requests.
         let max_requesters = Arc::new(Semaphore::new(4));
-
-        // TODO: add a per-website request delay
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
         loop {
             tokio::select! {
@@ -136,27 +154,8 @@ impl WebCrawler {
                     };
 
                     match command {
-                        CrawlCommand::RequestCrawl(request) => {
-                            // 1. depth check
-                            if request.depth < 0 {
-                                continue;
-                            }
-
-                            // 2. tracking crawls
-                            if !visited.insert(request.source.clone()) {
-                                // we already visited this page
-                                continue;
-                            }
-
-                            // 3. spawns a page requester
-                            tokio::spawn({
-                                let permit = max_requesters.clone();
-                                let sender = parser_tx.clone();
-                                let client = client.clone();
-                                async move {
-                                    Self::requester_worker(permit, request, sender, client).await;
-                                }
-                            });
+                        CrawlCommand::Request(request) => {
+                            let _ = event_tx.send(ManagerEvent::Request(request));
                         }
                         CrawlCommand::Terminate => {
                             // all channels will be dropped; consequently,
@@ -172,46 +171,105 @@ impl WebCrawler {
                     };
 
                     match event {
-                        ManagerEvent::Parsed(parser_result) => {
-                            // 1. depth check + spawn new crawls for the discovered links
-                            let new_depth = parser_result.depth - 1;
-                            if new_depth >= 0 {
-                                for link in &parser_result.discovered_links {
-                                    if !visited.insert(link.clone()) {
-                                        // we already visited this page
-                                        continue;
-                                    }
-
-                                    // notify a new task is being queued
-                                    let response = CrawlResponse::Queued(link.clone());
-                                    if response_tx.send_async(response).await.is_err() {
-                                        break; // external client disconnected
-                                    };
-
-                                    tokio::spawn({
-                                        let permit = max_requesters.clone();
-                                        let sender = parser_tx.clone();
-                                        let client = client.clone();
-                                        let request  = CrawlRequest {
-                                            source: link.clone(),
-                                            depth: new_depth,
-                                        };
-                                        async move {
-                                            Self::requester_worker(permit, request, sender, client).await;
-                                        }
-                                    });
-                                }
+                        ManagerEvent::Request(request) => {
+                            // depth check
+                            if request.depth < 0 {
+                                continue; // invalid request
                             }
 
-                            // 2. sends back the result of a crawled page using the 'sender'
-                            let response = CrawlResponse::Page(parser_result);
-                            if response_tx.send_async(response).await.is_err() {
-                                // the external client disconnected without sendind a terminate command.
-                                break;
+                            // tracking crawls
+                            // WARN: is there any scenario this check may not be sufficient?
+                            if !visited.insert(request.source.clone()) {
+                                let _ = event_tx.send(ManagerEvent::Skipped(request.source));
+                                continue; // we already visited this page
+                            }
+
+                            // TODO: we currently avoid crawling visited pages again completely.
+                            // implement a small state machine alike Enum(Pending, Parsed) to track
+                            // the current state of a page request.
+                            //
+                            // here's a previous implementation idea that only relies on depth (i8)
+                            //
+                            // match visited.entry(request.source.clone()) {
+                            //     Entry::Occupied(mut entry) => {
+                            //         // in case we are crawling this website again, only do so if
+                            //         // the requested depth is bigger than the currently crawled one
+                            //         if *entry.get() >= request.depth {
+                            //             continue;
+                            //         }
+                            //         entry.insert(request.depth);
+                            //     },
+                            //     Entry::Vacant(entry) => {
+                            //         entry.insert(request.depth);
+                            //     }
+                            // }
+
+                            // spawns the task
+                            tokio::spawn({
+                                let timestamp_start = time::Instant::now();
+                                let permit = max_requesters.clone();
+                                let event_tx = event_tx.clone();
+                                let response_tx = response_tx.clone();
+                                let client = client.clone();
+
+                                async move {
+                                    let Some((status, body, urls)) = WebCrawler::process_page(permit, request.clone(), client, event_tx.clone()).await else {
+                                        let _ = event_tx.send(ManagerEvent::Skipped(request.source));
+                                        return
+                                    };
+
+                                    // branch off new requests, if applicable
+                                    if  request.depth > 0  {
+                                        let _ = event_tx.send(ManagerEvent::Branch(request.source.clone(), request.depth, urls.clone()));
+                                    }
+
+                                    let message = ParserResult {
+                                        url: request.source.clone(),
+                                        depth: request.depth,
+                                        status: status,
+                                        timestamp_start: timestamp_start,
+                                        timestamp_end: time::Instant::now(),
+                                        page_content: body,
+                                        discovered_links: urls,
+                                    };
+
+                                    // sends the payload to the listener
+                                    if response_tx.send_async(CrawlResponse::Page(message)).await.is_err() {
+                                        let _ = event_tx.send(ManagerEvent::Terminate);
+                                    }
+                                }
+                            });
+                        }
+                        ManagerEvent::Branch(url, depth, links) => {
+                            // notify a new crawl is being queued
+                            let url = url.clone();
+                            let ammount = links.len();
+                            let _ = response_tx.send_async(CrawlResponse::Queued(url, ammount)).await;
+
+                            for link in &links {
+                                let event_tx = event_tx.clone();
+                                let request = CrawlRequest {
+                                    source: link.clone(),
+                                    depth: depth - 1,
+                                };
+                                let _ = event_tx.send(ManagerEvent::Request(request));
+                            }
+                        }
+                        ManagerEvent::Error(url, crawl_error) => {
+                            if response_tx.send_async(CrawlResponse::Error(url, crawl_error)).await.is_err() {
+                              let _ = event_tx.send(ManagerEvent::Terminate);
+                            }
+                        }
+                        ManagerEvent::Skipped(url) => {
+                            if response_tx.send_async(CrawlResponse::Skipped(url)).await.is_err(){
+                                let _ = event_tx.send(ManagerEvent::Terminate);
                             };
                         }
-                        ManagerEvent::Error() => {
-                            //
+                        ManagerEvent::TaskPanic(_err) => {
+                            // we ignore those for now, but it's here if necessary.
+                        }
+                        ManagerEvent::Terminate => {
+                            break;
                         }
                     }
                 }
@@ -219,97 +277,75 @@ impl WebCrawler {
         }
     }
 
-    async fn requester_worker(
+    async fn process_page(
         permit: Arc<Semaphore>,
         request: CrawlRequest,
-        sender: mpsc::Sender<RequesterResult>,
-        client: reqwest::Client,
-    ) {
-        println!("Spawn request worker: {}", request.source);
+        client: Client,
+        event_tx: mpsc::UnboundedSender<ManagerEvent>,
+    ) -> Option<(StatusCode, String, HashSet<Url>)> {
+        //
+        let _owned = permit.acquire_owned().await.ok()?;
 
-        let Ok(_) = permit.acquire_owned().await else {
-            // the semaphore is closed
-            return;
-        };
-
-        let CrawlRequest { source, depth } = request;
-
-        match Self::request_webpage_html(source.clone(), client).await {
-            Ok(Some(body)) => {
-                println!("crawled: {}", source);
-                // happy path: sends the page body to the parser
-                let result = RequesterResult {
-                    source: source,
-                    depth: depth,
-                    html_body: body,
-                };
-                if sender.send(result).await.is_err() {
-                    // no parser to hear us, silently return.
-                    return;
-                }
-            }
+        let (body, status) = match Self::process_page_request(request.clone(), client.clone()).await
+        {
+            Ok(Some(res)) => res,
             Ok(None) => {
-                println!("not html: {}", source);
-                // not html, we can safely ignore this page
-                return;
+                let _ = event_tx.send(ManagerEvent::Skipped(request.source)); // not hml
+                return None;
             }
-            Err(err) => {
-                println!("Network error for {}: {:?}", source, err);
-                // NOTE: for now it's just fire and forget
-                return;
+            Err(crawl_err) => {
+                let _ = event_tx.send(ManagerEvent::Error(request.source, crawl_err));
+                return None;
             }
         };
+
+        let urls = match Self::process_page_parse(request.source, body.clone()).await {
+            Ok(res) => res,
+            Err(err) => {
+                let _ = event_tx.send(err);
+                return None;
+            }
+        };
+
+        Some((status, body, urls))
     }
 
-    // WARN: is there a better name for this method?
-    async fn parser_actor(
-        mut parser_rx: mpsc::Receiver<RequesterResult>,
-        manager_tx: mpsc::Sender<ManagerEvent>,
-    ) {
-        while let Some(request_result) = parser_rx.recv().await {
-            println!("Parsing: {}", request_result.source);
-
-            let manager_tx = manager_tx.clone();
-            let (tx, rx) = oneshot::channel();
-
-            // spawns the rayon worker and goes back to listening request_result's;
-            rayon::spawn(move || {
-                println!("Spawn parser acdor: {}", request_result.source);
-                let urls: HashSet<Url> = Self::parse_webpage_html(&request_result);
-                let result = ParserResult {
-                    domain: request_result.source,
-                    path: None,
-                    depth: request_result.depth,
-                    status: StatusCode::IM_A_TEAPOT,
-                    //
-                    timestamp_start: SystemTime::now(), // WARN: undefined
-                    timestamp_end: SystemTime::now(),   // WARN: undefined
-                    //
-                    page_content: request_result.html_body,
-                    discovered_links: urls,
-                };
-                let _ = tx.send(result);
-            });
-
-            tokio::spawn(async move {
-                if let Ok(result) = rx.await {
-                    if manager_tx
-                        .send(ManagerEvent::Parsed(result))
-                        .await //
-                        .is_err()
-                    {
-                        // no manager to hear our pleas, end the task
-                        return;
-                    };
-                }
-            });
+    // TODO: consider moving the body of the function to the caller
+    async fn process_page_request(
+        request: CrawlRequest,
+        client: Client,
+    ) -> Result<Option<(String, StatusCode)>, CrawlError> {
+        match Self::request_webpage_html(request.source.clone(), client).await {
+            Ok(body_opt) => Ok(body_opt), // NOTE: returs NONE if the page is not html
+            Err(err) => Err(CrawlError::Network(err.to_string())),
         }
     }
+
+    // TODO: consider moving the body of the function to the caller
+    async fn process_page_parse(
+        url: Url,
+        body: String,
+        // response_tx: flume::Sender<CrawlResponse>,
+    ) -> Result<HashSet<Url>, ManagerEvent> {
+        let task_url = url.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let urls: HashSet<Url> = Self::parse_webpage_html(task_url, body);
+            urls
+        })
+        .await;
+
+        return match result {
+            Ok(res) => Ok(res),
+            Err(err) => Err(ManagerEvent::TaskPanic(err)),
+        };
+    }
+
+    ////
 
     async fn request_webpage_html(
         url: Url,
         client: Client,
-    ) -> Result<Option<String>, reqwest::Error> {
+    ) -> Result<Option<(String, StatusCode)>, reqwest::Error> {
         let response = client
             .get(url)
             .send() //
@@ -327,24 +363,17 @@ impl WebCrawler {
             return Ok(None);
         }
 
-        let body = response
-            .text() //
-            .await?;
-
-        Ok(Some(body))
+        let status = response.status();
+        let body = response.text().await?;
+        Ok(Some((body, status)))
     }
 
-    fn parse_webpage_html(request: &RequesterResult) -> HashSet<Url> {
-        let RequesterResult {
-            source,
-            depth: _,
-            html_body,
-        } = request;
+    fn parse_webpage_html(url: Url, html_body: String) -> HashSet<Url> {
+        let source = url; // TODO:: use the correct url.source();
 
         let document = Html::parse_document(&html_body); // builds a DOM from the raw text
         let Ok(selector) = Selector::parse("a[href]") else {
-            // NOTE: for now it's just fire and forget
-            return HashSet::new();
+            return HashSet::new(); // no links in page
         };
         let mut extracted_urls = HashSet::new();
 

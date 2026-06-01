@@ -50,12 +50,12 @@ impl App {
             let _ = ViewEgui::run(view);
         });
 
+        println!("exiting App::run()");
         Ok(())
     }
 
     fn event_loop(
         &self,
-        // NOTE: &self here
         view_command_rx: flume::Receiver<CrawlCommand>,
         crawler_command_tx: flume::Sender<CrawlCommand>,
         crawler_response_rx: flume::Receiver<CrawlResponse>,
@@ -68,18 +68,24 @@ impl App {
                             CrawlResponse::Page(page) => {
                                 println!(
                                     "received page: {} ({})",
-                                    page.domain,
+                                    page.url,
                                     page.discovered_links.len()
                                 );
+                            }
+                            CrawlResponse::Skipped(url) => {
+                                println!("skipped page: {}", url);
                                 //
                             }
-                            CrawlResponse::Queued(url) => {
-                                println!("queued page: {}", url);
+                            CrawlResponse::Queued(url, count) => {
+                                println!("queued page: {} ({})", url, count);
                                 //
+                            }
+                            CrawlResponse::Error(url, err) => {
+                                println!("error: {} -> {}", url, err);
                             }
                         },
                         Err(err) => {
-                            println!("crawler_response err: {}", err);
+                            println!("channel closed?: {}", err);
                             return true;
                         }
                     }
@@ -94,7 +100,7 @@ impl App {
                             // debug info
                             if true {
                                 match command {
-                                    CrawlCommand::RequestCrawl(request) => {
+                                    CrawlCommand::Request(request) => {
                                         println!(
                                             "view_command request: {} ({})",
                                             request.source, request.depth
@@ -119,6 +125,7 @@ impl App {
                 .wait();
 
             if to_break {
+                let _ = crawler_command_tx.send(CrawlCommand::Terminate);
                 println!("breaking free of the App event_loop");
                 break;
             }
