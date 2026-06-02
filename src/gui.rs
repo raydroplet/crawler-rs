@@ -32,10 +32,26 @@ struct ActivityMetadata {
 
 //////////////////
 
-const ACTIVITY_ENTRY_COUNT: usize = 8;
+const ACTIVITY_ENTRY_COUNT: usize = 128;
+struct GraphState {
+    is_running: bool,
+    //
+    delta: f32, // dt
+    damping: f32,
+    max_step: f32,
+    epsilon: f32,
+    //
+    k_scale: f32,
+    c_attract: f32,
+    c_repulse: f32,
+    //
+    has_center_gravity: bool,
+    center_strenght: f32,
+}
+
 pub struct ViewEgui {
     //
-    // graph_state: LayoutState, // TODO: to set defaults, avoid overuse of ::get_layout_state
+    graph_state: GraphState,
     graph_lookup: HashMap<Url, NodeIndex>,
     graph: egui_graphs::Graph<Option<PageMetadata>, (), Undirected>,
     pub show_markdown_window: bool,
@@ -60,27 +76,28 @@ pub struct ViewEgui {
     activity_tab_data: VecDeque<ActivityMetadata>,
 }
 
-                        // ui.horizontal(|ui| {
-                        //     // NOTE: 0.100
-                        //     ui.add(egui::Slider::new(&mut state.base.dt, 0.001..=0.2).text("dt"));
-                        //     info_icon(ui, "Integration time step (Euler). Larger = faster movement but less stable.");
-                        // });
-                        // ui.horizontal(|ui| {
-                        //     // NOTE: 0.01
-                        //     ui.add(egui::Slider::new(&mut state.base.damping, 0.0..=1.0).text("damping"));
-                        //     info_icon(ui, "Velocity damping per frame. 1 = no damping, 0 = immediate stop.");
-                        // });
-                        // ui.horizontal(|ui| {
-                        //     // NOTE: 3.0
-                        //     ui.add(egui::Slider::new(&mut state.base.max_step, 0.1..=50.0).text("max_step"));
-                        //     info_icon(ui, "Maximum pixel displacement applied per frame to prevent explosions.");
-                        // });
-                        // ui.horizontal(|ui| {
-                        //     // NOTE: 0.015
-                        //     ui.add(egui::Slider::new(&mut state.base.epsilon, 1e-5..=1e-1).logarithmic(true).text("epsilon"));
-                        //     info_icon(ui, "Minimum distance clamp to avoid division by zero in force calculations.");
-                        // });
+// ui.horizontal(|ui| {
+//     // NOTE: 0.100
+//     ui.add(egui::Slider::new(&mut state.base.dt, 0.001..=0.2).text("dt"));
+//     info_icon(ui, "Integration time step (Euler). Larger = faster movement but less stable.");
+// });
+// ui.horizontal(|ui| {
+//     // NOTE: 0.01
+//     ui.add(egui::Slider::new(&mut state.base.damping, 0.0..=1.0).text("damping"));
+//     info_icon(ui, "Velocity damping per frame. 1 = no damping, 0 = immediate stop.");
+// });
+// ui.horizontal(|ui| {
+//     // NOTE: 3.0
+//     ui.add(egui::Slider::new(&mut state.base.max_step, 0.1..=50.0).text("max_step"));
+//     info_icon(ui, "Maximum pixel displacement applied per frame to prevent explosions.");
+// });
+// ui.horizontal(|ui| {
+//     // NOTE: 0.015
+//     ui.add(egui::Slider::new(&mut state.base.epsilon, 1e-5..=1e-1).logarithmic(true).text("epsilon"));
+//     info_icon(ui, "Minimum distance clamp to avoid division by zero in force calculations.");
+// });
 
+// use egui_graphs::{FruchtermanReingoldWithExtrasState, Extra, CenterGravity};
 
 impl ViewEgui {
     pub fn new(
@@ -98,7 +115,24 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
 > Ad Philammon viarum genitas nullosque cervicis legem; per simul simulantis
 > ignisque solvo num; tellus sequitur: oro. Quibus adspexisse Ilios. Mentisque";
 
+        let state = GraphState {
+            is_running: true,
+            //
+            delta: 0.100, // delta: 0.050,
+            damping: 0.01, // damping: 0.30,
+            max_step: 3.0, // max_step: 10.0,
+            epsilon: 0.015, // epsilon: 0.0010,
+            //
+            k_scale: 3.0, // k_scale: 1.0,
+            c_attract: 1.0,
+            c_repulse: 1.0,
+            //
+            has_center_gravity: true,
+            center_strenght: 0.30,
+        };
+
         Self {
+            graph_state: state,
             graph_lookup: HashMap::new(),
             graph: graph,
             show_markdown_window: false,
@@ -279,6 +313,9 @@ impl ViewEgui {
                                 index
                             } else {
                                 // add a root node
+                                //
+                                // WARN:None? also check similar calls.
+                                // the crawler must always return valid .domain() urls.
                                 let label = String::from(metadata.url.domain().unwrap_or("None"));
                                 let index = self
                                     .graph
@@ -550,7 +587,7 @@ impl ViewEgui {
                                     egui::ScrollArea::vertical()
                                         .auto_shrink([false, false]) // Forces scroll area to fill the panel height
                                         .show(ui, |ui| {
-                                            for entry in self.activity_tab_data.iter().rev() {
+                                            for entry in self.activity_tab_data.iter() {
                                                 let status = entry.status;
 
                                                 ui.horizontal(|ui| {
@@ -1167,33 +1204,66 @@ impl ViewEgui {
                                 >(ui, None);
 
                                 ui.horizontal(|ui| {
-                                    ui.checkbox(&mut state.base.is_running, "running");
+                                    ui.checkbox(&mut self.graph_state.is_running, "running");
                                 });
                                 ui.horizontal(|ui| {
                                     ui.add(
-                                        egui::Slider::new(&mut state.base.dt, 0.001..=0.2)
-                                            // .text("dt"),
+                                        egui::Slider::new(&mut self.graph_state.delta, 0.001..=0.2), // .text("dt"),
                                     );
                                 });
                                 ui.horizontal(|ui| {
                                     ui.add(
-                                        egui::Slider::new(&mut state.base.damping, 0.0..=1.0)
-                                            // .text("damping"),
+                                        egui::Slider::new(&mut self.graph_state.damping, 0.0..=1.0), // .text("damping"),
                                     );
                                 });
                                 ui.horizontal(|ui| {
                                     ui.add(
-                                        egui::Slider::new(&mut state.base.max_step, 0.1..=50.0)
-                                            // .text("max_step"),
+                                        egui::Slider::new(
+                                            &mut self.graph_state.max_step,
+                                            0.1..=50.0,
+                                        ), // .text("max_step"),
                                     );
                                 });
                                 ui.horizontal(|ui| {
                                     ui.add(
-                                        egui::Slider::new(&mut state.base.epsilon, 1e-5..=1e-1)
-                                            .logarithmic(true)
-                                            // .text("epsilon"),
+                                        egui::Slider::new(
+                                            &mut self.graph_state.epsilon,
+                                            1e-5..=1e-1,
+                                        )
+                                        .logarithmic(true), // .text("epsilon"),
                                     );
                                 });
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::Slider::new(
+                                        &mut self.graph_state.k_scale,
+                                        0.2..=3.0,
+                                    ));
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::Slider::new(
+                                        &mut self.graph_state.c_attract,
+                                        0.1..=3.0,
+                                    ));
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::Slider::new(
+                                        &mut self.graph_state.c_repulse,
+                                        0.1..=3.0,
+                                    ));
+                                });
+
+                                // overwrite widget values
+                                state.base.is_running = self.graph_state.is_running;
+                                state.base.dt = self.graph_state.delta;
+                                state.base.damping = self.graph_state.damping;
+                                state.base.max_step = self.graph_state.max_step;
+                                state.base.epsilon = self.graph_state.epsilon;
+                                state.base.k_scale = self.graph_state.k_scale;
+                                state.base.c_attract = self.graph_state.c_attract;
+                                state.base.c_repulse = self.graph_state.c_repulse;
+                                state.extras.0.enabled = self.graph_state.has_center_gravity;
+                                state.extras.0.params.c = self.graph_state.center_strenght;
+
                                 egui_graphs::set_layout_state::<
                                     FruchtermanReingoldWithCenterGravityState,
                                 >(ui, state, None);

@@ -388,6 +388,9 @@ impl WebCrawler {
             if let Some(href) = element.value().attr("href") {
                 //
                 if let Ok(mut absolute_url) = source.join(href) {
+                        // Only accept standard web protocols
+                        let scheme = absolute_url.scheme();
+                        if scheme == "http" || scheme == "https" {
                     // remove headers (page.com/article#header -> page.com/article)
                     absolute_url.set_fragment(None);
                     // remove query parameters (?action=edit)
@@ -395,6 +398,7 @@ impl WebCrawler {
                     absolute_url.set_query(None);
                     //
                     extracted_urls.insert(absolute_url);
+                    }
                 }
             }
         }
