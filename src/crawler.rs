@@ -1,13 +1,13 @@
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{Client};
+pub use reqwest::{Url, StatusCode};
 use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinError;
-use std::time::{self, Instant};
 
 //---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//---//
 // what the external world sees
@@ -15,11 +15,11 @@ use std::time::{self, Instant};
 #[derive(Clone)]
 pub enum CrawlCommand {
     Request(CrawlRequest), // starts a crawl of a defined depth
-    Terminate,
+    Terminate, // WARN: do we need an explict Terminate command?
 }
 
-// TODO: only inform a queued page if sure you gonna crawl it (silently skip duplicates)
-// avoid overuse of skipped
+// TODO: only inform a queued page if sure you gonna crawl it
+// (silently skip duplicates) avoid overuse of skipped
 pub enum CrawlResponse {
     Page(ParserResult), // occasionally returns the result of a single page crawl
     Queued(Url, usize), // url, number of queued links in it
@@ -76,16 +76,19 @@ pub struct CrawlRequest {
     pub depth: i8,
 }
 
-pub struct ParserResult {
+#[derive(Clone)]
+pub struct PageMetadata {
     pub url: Url,
-    pub depth: i8,
+    // pub depth: i8,
     pub status: StatusCode,
-    //
-    pub timestamp_start: Instant,
-    pub timestamp_end: Instant,
-    //
-    pub page_content: String,
-    pub discovered_links: HashSet<Url>,
+    pub timestamp_start: SystemTime,
+    pub timestamp_end: SystemTime,
+    pub discovered_links: Vec<Url>,
+}
+
+pub struct ParserResult {
+    pub metadata: PageMetadata,
+    pub content: String,
 }
 
 pub struct WebCrawler {
@@ -206,7 +209,7 @@ impl WebCrawler {
 
                             // spawns the task
                             tokio::spawn({
-                                let timestamp_start = time::Instant::now();
+                                let timestamp_start = SystemTime::now();
                                 let permit = max_requesters.clone();
                                 let event_tx = event_tx.clone();
                                 let response_tx = response_tx.clone();
@@ -223,14 +226,17 @@ impl WebCrawler {
                                         let _ = event_tx.send(ManagerEvent::Branch(request.source.clone(), request.depth, urls.clone()));
                                     }
 
-                                    let message = ParserResult {
+                                    let metadata = PageMetadata {
                                         url: request.source.clone(),
-                                        depth: request.depth,
+                                        // depth: request.depth,
                                         status: status,
                                         timestamp_start: timestamp_start,
-                                        timestamp_end: time::Instant::now(),
-                                        page_content: body,
-                                        discovered_links: urls,
+                                        timestamp_end: SystemTime::now(),
+                                        discovered_links: urls.into_iter().collect(),
+                                    };
+                                    let message = ParserResult {
+                                        metadata: metadata,
+                                        content: body,
                                     };
 
                                     // sends the payload to the listener

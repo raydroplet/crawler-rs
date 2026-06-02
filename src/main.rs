@@ -1,7 +1,7 @@
 use crawler_rs::app::{App};
 
 fn main() {
-    let app = App::new();
+    let mut app = App::new();
 
     match app.run() {
         Ok(_) => {

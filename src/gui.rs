@@ -1,15 +1,18 @@
 // src/gui.rs
-use crate::crawler::{CrawlCommand, CrawlResponse, CrawlRequest};
-use crossbeam_channel as crossbeam;
+use crate::app::{AppRequest, AppResponse, CrawlCommand, CrawlEvent, CrawlRequest, PageMetadata};
+// use crossbeam_channel as crossbeam;
 use eframe;
 use egui::{Color32, Pos2, RichText};
-use egui_graphs::{FruchtermanReingoldWithCenterGravityState, Layout};
+use egui_graphs::FruchtermanReingoldWithCenterGravityState;
 use petgraph::{
-    Directed, Undirected,
-    stable_graph::{DefaultIx, StableGraph},
+    /* Directed, */ Undirected,
+    stable_graph::{DefaultIx, NodeIndex, StableGraph},
 };
 use rand::RngExt;
-use reqwest::Url;
+use reqwest::{StatusCode, Url};
+use std::collections::{HashMap, VecDeque};
+use std::f32::consts::TAU;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 ///////////////////
 
@@ -20,10 +23,21 @@ enum LeftTab {
     Errors,
 }
 
+struct ActivityMetadata {
+    status: StatusCode,
+    domain: String,
+    path: String,
+    timestamp: String, // or chrono::NaiveTime, if you really want to
+}
+
 //////////////////
 
+const ACTIVITY_ENTRY_COUNT: usize = 8;
 pub struct ViewEgui {
-    graph: egui_graphs::Graph<(), (), Undirected>,
+    //
+    // graph_state: LayoutState, // TODO: to set defaults, avoid overuse of ::get_layout_state
+    graph_lookup: HashMap<Url, NodeIndex>,
+    graph: egui_graphs::Graph<Option<PageMetadata>, (), Undirected>,
     pub show_markdown_window: bool,
     pub show_outbound_window: bool,
     pub markdown_text: String,
@@ -40,14 +54,38 @@ pub struct ViewEgui {
     crawl_input_url: String,
     crawl_input_depth: i8,
     //
-    crawler_rx: flume::Receiver<CrawlResponse>,
-    crawler_tx: flume::Sender<CrawlCommand>,
+    app_rx: flume::Receiver<AppResponse>,
+    app_tx: flume::Sender<AppRequest>,
+    //
+    activity_tab_data: VecDeque<ActivityMetadata>,
 }
+
+                        // ui.horizontal(|ui| {
+                        //     // NOTE: 0.100
+                        //     ui.add(egui::Slider::new(&mut state.base.dt, 0.001..=0.2).text("dt"));
+                        //     info_icon(ui, "Integration time step (Euler). Larger = faster movement but less stable.");
+                        // });
+                        // ui.horizontal(|ui| {
+                        //     // NOTE: 0.01
+                        //     ui.add(egui::Slider::new(&mut state.base.damping, 0.0..=1.0).text("damping"));
+                        //     info_icon(ui, "Velocity damping per frame. 1 = no damping, 0 = immediate stop.");
+                        // });
+                        // ui.horizontal(|ui| {
+                        //     // NOTE: 3.0
+                        //     ui.add(egui::Slider::new(&mut state.base.max_step, 0.1..=50.0).text("max_step"));
+                        //     info_icon(ui, "Maximum pixel displacement applied per frame to prevent explosions.");
+                        // });
+                        // ui.horizontal(|ui| {
+                        //     // NOTE: 0.015
+                        //     ui.add(egui::Slider::new(&mut state.base.epsilon, 1e-5..=1e-1).logarithmic(true).text("epsilon"));
+                        //     info_icon(ui, "Minimum distance clamp to avoid division by zero in force calculations.");
+                        // });
+
 
 impl ViewEgui {
     pub fn new(
-        app_response_rx: flume::Receiver<CrawlResponse>,
-        app_command_tx: flume::Sender<CrawlCommand>,
+        app_response_rx: flume::Receiver<AppResponse>,
+        app_request_tx: flume::Sender<AppRequest>,
     ) -> Self {
         let mut graph = Self::generate_basic_graph();
         Self::distribute_nodes_circle_generic(&mut graph);
@@ -61,6 +99,7 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
 > ignisque solvo num; tellus sequitur: oro. Quibus adspexisse Ilios. Mentisque";
 
         Self {
+            graph_lookup: HashMap::new(),
             graph: graph,
             show_markdown_window: false,
             show_outbound_window: false,
@@ -76,8 +115,10 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             crawl_input_url: String::from("https://httpbin.org/"),
             crawl_input_depth: 0,
             //
-            crawler_rx: app_response_rx,
-            crawler_tx: app_command_tx,
+            app_rx: app_response_rx,
+            app_tx: app_request_tx,
+            //
+            activity_tab_data: VecDeque::new(),
         }
     }
 
@@ -97,7 +138,7 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
     }
 
     pub fn distribute_nodes_circle_generic<Ty: petgraph::EdgeType>(
-        g: &mut egui_graphs::Graph<(), (), Ty, petgraph::stable_graph::DefaultIx>,
+        g: &mut egui_graphs::Graph<Option<PageMetadata>, (), Ty, petgraph::stable_graph::DefaultIx>,
     ) {
         let n_usize = core::cmp::max(g.node_count(), 1);
         if n_usize == 0 {
@@ -131,11 +172,15 @@ impl ViewEgui {
         g
     }
 
-    fn generate_basic_graph() -> egui_graphs::Graph<(), (), Undirected, DefaultIx> {
+    fn generate_basic_graph() -> egui_graphs::Graph<Option<PageMetadata>, (), Undirected, DefaultIx>
+    {
         let petgraph: StableGraph<(), (), Undirected, DefaultIx> =
             Self::generate_random_petgraph(100, 300);
-        let graph: egui_graphs::Graph<(), (), Undirected, DefaultIx> =
-            egui_graphs::Graph::from(&petgraph);
+
+        let mut empty_graph: StableGraph<Option<PageMetadata>, (), Undirected, DefaultIx> =
+            StableGraph::default();
+        let graph: egui_graphs::Graph<Option<PageMetadata>, (), Undirected, DefaultIx> =
+            egui_graphs::Graph::from(&empty_graph);
         graph
     }
 
@@ -180,9 +225,120 @@ impl ViewEgui {
         let _view = egui_graphs::GraphView::<_, _, _, _, _, _, S3, L3>::new(&mut self.graph);
     }
 
+    fn format_timestamp(timepoint: SystemTime) -> String {
+        // 1. Get the duration since Jan 1, 1970
+        let Ok(duration) = timepoint.duration_since(UNIX_EPOCH) else {
+            return String::from("Time went backwards");
+        };
+
+        let total_seconds = duration.as_secs();
+
+        // 2. Isolate the seconds for the current day (86,400 seconds in a day)
+        let seconds_today = total_seconds % 86400;
+
+        let hours = seconds_today / 3600;
+        let minutes = (seconds_today % 3600) / 60;
+
+        format!("{:02}:{:02}", hours, minutes)
+    }
+
     ////////
     fn poll_events(&mut self) {
+        if let Ok(message) = self.app_rx.try_recv() {
+            match message {
+                AppResponse::Crawler(event) => match event {
+                    // TODO: clean this up
+                    CrawlEvent::Page(metadata) => {
+                        // activity tab.
+                        // push element. limit the ammount.
+                        let domain = String::from(metadata.url.domain().unwrap_or("None"));
+                        let path = String::from(metadata.url.path());
+                        let timepoint =
+                            String::from(Self::format_timestamp(metadata.timestamp_start));
+                        let activity_metadata = ActivityMetadata {
+                            status: metadata.status,
+                            domain: domain,
+                            path: path,
+                            timestamp: timepoint,
+                        };
 
+                        self.activity_tab_data.push_front(activity_metadata);
+                        if self.activity_tab_data.len() > ACTIVITY_ENTRY_COUNT {
+                            self.activity_tab_data.pop_back();
+                        }
+
+                        // node
+                        let metadata_url = metadata.url.clone();
+                        let source_index =
+                            if let Some(&index) = self.graph_lookup.get(&metadata_url) {
+                                // said page is already present, update it
+                                if let Some(node) = self.graph.node_mut(index) {
+                                    // TODO: prune orphan edges down below (for now it only adds)
+                                    *node.payload_mut() = Some(metadata.clone());
+                                }
+                                index
+                            } else {
+                                // add a root node
+                                let label = String::from(metadata.url.domain().unwrap_or("None"));
+                                let index = self
+                                    .graph
+                                    .add_node_with_label(Some(metadata.clone()), label.clone());
+                                println!("root add_node({})", label);
+                                self.graph_lookup.insert(metadata_url, index);
+                                index
+                            };
+                        // edges
+                        // NOTE: here
+                        for link in metadata.discovered_links {
+                            let target_index = if let Some(&index) = self.graph_lookup.get(&link) {
+                                // get the index of the target node
+                                index
+                            } else {
+                                // if said node doesn't exist, create an empty one
+                                let label = String::from(link.domain().unwrap_or("None"));
+                                let index = self.graph.add_node_with_label(None, label.clone());
+                                println!("empty add_node({})", label);
+                                self.graph_lookup.insert(link, index);
+
+                                // 2. Apply initial jitter to avoid division-by-zero explosions
+                                if let Some(node) = self.graph.node_mut(index) {
+                                    let mut rng = rand::rng();
+
+                                    // Pick a random angle (0 to 360 degrees in radians)
+                                    let angle = rng.random_range(0.0..TAU);
+
+                                    // Pick a random distance from the center (e.g., 10 to 50 pixels)
+                                    let distance = rng.random_range(10.0..50.0);
+
+                                    // Convert polar coordinates to X/Y
+                                    let jitter_x = angle.cos() * distance;
+                                    let jitter_y = angle.sin() * distance;
+
+                                    node.set_location(egui::Pos2::new(jitter_x, jitter_y));
+                                }
+
+                                index
+                            };
+
+                            // finally link the nodes
+                            if self
+                                .graph
+                                .edges_connecting(source_index, target_index)
+                                .next()
+                                .is_none()
+                            {
+                                self.graph.add_edge(source_index, target_index, ());
+                                println!("add_edge({:?}, {:?})", source_index, target_index);
+                            }
+                        }
+                    }
+                    CrawlEvent::Queued(url, count) => {}
+                    CrawlEvent::Skipped(url) => {}
+                    CrawlEvent::Error(url, error) => {}
+                },
+                AppResponse::Markdown(url, content) => {}
+            }
+        }
     }
 
     fn render_ui(&mut self, ui: &mut egui::Ui) {
@@ -247,7 +403,8 @@ impl ViewEgui {
                                     println!("Center");
                                 }
                                 if ui.button("🔄 Reorganize").clicked() {
-                                    Self::distribute_nodes_circle_generic(&mut self.graph);
+                                    // TODO:
+                                    // Self::distribute_nodes_circle_generic(&mut self.graph);
                                     println!("Reorganize");
                                 }
                             });
@@ -292,23 +449,24 @@ impl ViewEgui {
 
                     ui.horizontal(|ui| {
                         if ui.button("▶ Start Session").clicked() {
-
                             let Ok(url) = Url::parse(&self.crawl_input_url) else {
                                 println!("failed to parse"); // TODO: provide a better warning
                                 return;
                             };
 
-                            let request = CrawlRequest { 
+                            let request = CrawlRequest {
                                 source: url,
                                 depth: self.crawl_input_depth,
                             };
-                            let _ = self.crawler_tx.send(CrawlCommand::Request(request));
+                            let command = CrawlCommand::Request(request);
+                            let _ = self.app_tx.send(AppRequest::Crawler(command));
 
                             // close_window = true;
                         }
 
                         if ui.button("⏹ End Session").clicked() {
-                            let _ = self.crawler_tx.send(CrawlCommand::Terminate);
+                            let command = CrawlCommand::Terminate;
+                            let _ = self.app_tx.send(AppRequest::Crawler(command));
 
                             // close_window = true;
                         }
@@ -392,23 +550,15 @@ impl ViewEgui {
                                     egui::ScrollArea::vertical()
                                         .auto_shrink([false, false]) // Forces scroll area to fill the panel height
                                         .show(ui, |ui| {
-                                            let history = vec![
-                                                (
-                                                    "12:04",
-                                                    "200",
-                                                    "wikipedia.com",
-                                                    "/blog/getting-started-with-graphing-tool",
-                                                ),
-                                                ("12:05", "200", "wikipedia.com", "/docs/api"),
-                                                ("12:06", "301", "wikipedia.com", "/home"),
-                                                ("12:07", "404", "wikipedia.com", "/broken-link"),
-                                            ];
+                                            for entry in self.activity_tab_data.iter().rev() {
+                                                let status = entry.status;
 
-                                            for (time, code, domain, path) in history {
                                                 ui.horizontal(|ui| {
-                                                    let code_color = if code.starts_with("2") {
+                                                    let code_color = if status.is_success() {
                                                         Color32::from_rgb(0, 100, 0)
-                                                    } else if code.starts_with("4") {
+                                                    } else if status.is_client_error()
+                                                        || status.is_server_error()
+                                                    {
                                                         Color32::from_rgb(100, 0, 0)
                                                     } else {
                                                         Color32::from_rgb(100, 100, 0)
@@ -416,9 +566,12 @@ impl ViewEgui {
 
                                                     // 1. Claim space on the left (Badge)
                                                     ui.label(
-                                                        RichText::new(format!(" {} ", code))
-                                                            .background_color(code_color)
-                                                            .color(Color32::WHITE),
+                                                        RichText::new(format!(
+                                                            " {} ",
+                                                            status.as_str()
+                                                        ))
+                                                        .background_color(code_color)
+                                                        .color(Color32::WHITE),
                                                     );
 
                                                     // 2. Anchor the rest of the layout to the right
@@ -427,10 +580,11 @@ impl ViewEgui {
                                                             egui::Align::Center,
                                                         ),
                                                         |ui| {
-                                                            // 3. Claim space on the right (Timestamp) FIRST
                                                             ui.label(
-                                                                RichText::new(time)
-                                                                    .color(Color32::DARK_GRAY),
+                                                                RichText::new(
+                                                                    entry.timestamp.clone(),
+                                                                )
+                                                                .color(Color32::DARK_GRAY),
                                                             );
 
                                                             // 4. Fill the remaining middle space with the truncated address
@@ -442,7 +596,7 @@ impl ViewEgui {
                                                                     ui.spacing_mut()
                                                                         .item_spacing
                                                                         .x = 0.0;
-                                                                    ui.label(domain);
+                                                                    ui.label(entry.domain.clone());
                                                                     let weak_color = ui
                                                                         .visuals()
                                                                         .weak_text_color();
@@ -450,8 +604,10 @@ impl ViewEgui {
                                                                         .override_text_color =
                                                                         Some(weak_color);
                                                                     ui.add(
-                                                                        egui::Label::new(path)
-                                                                            .truncate(),
+                                                                        egui::Label::new(
+                                                                            entry.path.clone(),
+                                                                        )
+                                                                        .truncate(),
                                                                     );
                                                                 },
                                                             );
@@ -693,7 +849,7 @@ impl ViewEgui {
 
                 // 1. Trick the center calculation by expanding the LEFT boundary off-screen.
                 let mut virtual_rect = ui.available_rect_before_wrap();
-                virtual_rect.min.x -= right_window_width + right_margin;
+                virtual_rect.max.x -= right_window_width + right_margin;
 
                 // 2. Create the child UI with this shifted virtual rectangle
                 let mut graph_ui = ui.new_child(
@@ -912,11 +1068,11 @@ impl ViewEgui {
                                         });
                                         ui.end_row();
 
-                                        ui.label("Depth");
-                                        add_stretched_right_cell(ui, |ui| {
-                                            ui.label("2");
-                                        });
-                                        ui.end_row();
+                                        // ui.label("Depth");
+                                        // add_stretched_right_cell(ui, |ui| {
+                                        //     ui.label("2");
+                                        // });
+                                        // ui.end_row();
 
                                         ui.label("Links out");
                                         add_stretched_right_cell(ui, |ui| {
@@ -982,13 +1138,13 @@ impl ViewEgui {
                                     .show(ui, |ui| {
                                         ui.label("Nodes");
                                         add_stretched_right_cell(ui, |ui| {
-                                            ui.label("2384");
+                                            ui.label(self.graph.node_count().to_string());
                                         });
                                         ui.end_row();
                                         //
                                         ui.label("Links");
                                         add_stretched_right_cell(ui, |ui| {
-                                            ui.label("3002");
+                                            ui.label(self.graph.edge_count().to_string());
                                         });
                                         ui.end_row();
                                         //
@@ -1005,6 +1161,43 @@ impl ViewEgui {
                                         Self::distribute_nodes_circle_generic(&mut self.graph);
                                     }
                                 });
+                                ///////////////
+                                let mut state = egui_graphs::get_layout_state::<
+                                    FruchtermanReingoldWithCenterGravityState,
+                                >(ui, None);
+
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut state.base.is_running, "running");
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::Slider::new(&mut state.base.dt, 0.001..=0.2)
+                                            // .text("dt"),
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::Slider::new(&mut state.base.damping, 0.0..=1.0)
+                                            // .text("damping"),
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::Slider::new(&mut state.base.max_step, 0.1..=50.0)
+                                            // .text("max_step"),
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::Slider::new(&mut state.base.epsilon, 1e-5..=1e-1)
+                                            .logarithmic(true)
+                                            // .text("epsilon"),
+                                    );
+                                });
+                                egui_graphs::set_layout_state::<
+                                    FruchtermanReingoldWithCenterGravityState,
+                                >(ui, state, None);
+                                ///////////////
                             }
                         });
 

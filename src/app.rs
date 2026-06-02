@@ -1,27 +1,45 @@
-use crate::crawler::{CrawlCommand, CrawlResponse, ParserResult, WebCrawler};
+pub use crate::crawler::{CrawlCommand, CrawlRequest, CrawlError, PageMetadata};
+use crate::crawler::{CrawlResponse, Url, WebCrawler};
 use crate::gui::ViewEgui;
-use std::collections::HashSet;
+use std::collections::{HashMap};
 use std::error::Error;
 use std::thread;
 
 pub struct App {
-    pages: HashSet<ParserResult>,
+    pages: HashMap<Url, String>,
+}
+
+pub enum AppRequest {
+    Crawler(CrawlCommand),
+    Markdown(Url),
+}
+
+pub enum CrawlEvent {
+    Page(PageMetadata),
+    Queued(Url, usize),
+    Skipped(Url),
+    Error(Url, CrawlError),
+}
+
+pub enum AppResponse {
+    Crawler(CrawlEvent),
+    Markdown(Url, String),
 }
 
 impl App {
     pub fn new() -> Self {
         Self {
-            pages: HashSet::new(),
+            pages: HashMap::new(),
             //
         }
     }
 
-    pub fn run(&self) -> Result<(), Box<dyn Error>> {
+    pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
         //// channels
-        let (crawler_response_tx, mut crawler_response_rx) = flume::bounded(1024);
-        let (crawler_command_tx, mut crawler_command_rx) = flume::bounded(8);
-        let (view_response_tx, mut view_response_rx) = flume::bounded(1024);
-        let (view_command_tx, mut view_command_rx) = flume::bounded(1024);
+        let (crawler_response_tx, crawler_response_rx) = flume::bounded(1024);
+        let (crawler_command_tx, crawler_command_rx) = flume::bounded(8);
+        let (view_response_tx, view_response_rx) = flume::bounded(1024);
+        let (view_command_tx, view_command_rx) = flume::bounded(1024);
 
         //// actors
         let view = ViewEgui::new(view_response_rx, view_command_tx);
@@ -42,6 +60,7 @@ impl App {
             scope.spawn(|| {
                 self.event_loop(
                     view_command_rx,
+                    view_response_tx,
                     crawler_command_tx.clone(),
                     crawler_response_rx,
                 );
@@ -55,8 +74,9 @@ impl App {
     }
 
     fn event_loop(
-        &self,
-        view_command_rx: flume::Receiver<CrawlCommand>,
+        &mut self,
+        view_command_rx: flume::Receiver<AppRequest>,
+        view_response_tx: flume::Sender<AppResponse>,
         crawler_command_tx: flume::Sender<CrawlCommand>,
         crawler_response_rx: flume::Receiver<CrawlResponse>,
     ) {
@@ -68,9 +88,15 @@ impl App {
                             CrawlResponse::Page(page) => {
                                 println!(
                                     "received page: {} ({})",
-                                    page.url,
-                                    page.discovered_links.len()
+                                    page.metadata.url,
+                                    page.metadata.discovered_links.len()
                                 );
+                                // caches the page in case the gui asks for its contents
+                                self.pages.insert(page.metadata.url.clone(), page.content);
+                                let event = CrawlEvent::Page(page.metadata);
+                                if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
+                                    return true;
+                                };
                             }
                             CrawlResponse::Skipped(url) => {
                                 println!("skipped page: {}", url);
@@ -95,22 +121,31 @@ impl App {
                 .recv(&view_command_rx, |message| {
                     match message {
                         Ok(command) => {
-                            let _ = crawler_command_tx.send(command.clone());
-
-                            // debug info
-                            if true {
-                                match command {
-                                    CrawlCommand::Request(request) => {
-                                        println!(
-                                            "view_command request: {} ({})",
-                                            request.source, request.depth
-                                        );
-                                    }
-                                    CrawlCommand::Terminate => {
-                                        println!("view_command terminate");
+                            match command {
+                                AppRequest::Crawler(command) => {
+                                    if crawler_command_tx.send(command.clone()).is_err() {
                                         return true;
-                                        // TODO: notify crawler
+                                    };
+
+                                    // debug info
+                                    if true {
+                                        match command {
+                                            CrawlCommand::Request(request) => {
+                                                println!(
+                                                    "view_command request: {} ({})",
+                                                    request.source, request.depth
+                                                );
+                                            }
+                                            CrawlCommand::Terminate => {
+                                                println!("view_command terminate");
+                                                return true;
+                                                // TODO: notify crawler
+                                            }
+                                        }
                                     }
+                                }
+                                AppRequest::Markdown(url) => {
+                                    // TODO:
                                 }
                             }
                         }
