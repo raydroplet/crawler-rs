@@ -1,5 +1,5 @@
-use reqwest::{Client};
-pub use reqwest::{Url, StatusCode};
+use reqwest::Client;
+pub use reqwest::{StatusCode, Url};
 use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::error::Error;
@@ -15,7 +15,7 @@ use tokio::task::JoinError;
 #[derive(Clone)]
 pub enum CrawlCommand {
     Request(CrawlRequest), // starts a crawl of a defined depth
-    Terminate, // WARN: do we need an explict Terminate command?
+    Terminate,             // WARN: do we need an explict Terminate command?
 }
 
 // TODO: only inform a queued page if sure you gonna crawl it
@@ -388,16 +388,16 @@ impl WebCrawler {
             if let Some(href) = element.value().attr("href") {
                 //
                 if let Ok(mut absolute_url) = source.join(href) {
-                        // Only accept standard web protocols
-                        let scheme = absolute_url.scheme();
-                        if scheme == "http" || scheme == "https" {
-                    // remove headers (page.com/article#header -> page.com/article)
-                    absolute_url.set_fragment(None);
-                    // remove query parameters (?action=edit)
-                    // NOTE: this filters some valid links (like youtube.com/watch?v=video_id)
-                    absolute_url.set_query(None);
-                    //
-                    extracted_urls.insert(absolute_url);
+                    // Only accept standard web protocols
+                    let scheme = absolute_url.scheme();
+                    if scheme == "http" || scheme == "https" {
+                        // remove headers (page.com/article#header -> page.com/article)
+                        absolute_url.set_fragment(None);
+                        // remove query parameters (?action=edit)
+                        // NOTE: this filters some valid links (like youtube.com/watch?v=video_id)
+                        absolute_url.set_query(None);
+                        //
+                        extracted_urls.insert(absolute_url);
                     }
                 }
             }

@@ -65,6 +65,7 @@ pub struct ViewEgui {
     hubs_expanded: bool,
     broken_expanded: bool,
     graph_expanded: bool,
+    graph_show_advanced: bool,
     //
     show_crawl_window: bool,
     crawl_input_url: String,
@@ -118,9 +119,9 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
         let state = GraphState {
             is_running: true,
             //
-            delta: 0.100, // delta: 0.050,
-            damping: 0.01, // damping: 0.30,
-            max_step: 3.0, // max_step: 10.0,
+            delta: 0.100,   // delta: 0.050,
+            damping: 0.01,  // damping: 0.30,
+            max_step: 3.0,  // max_step: 10.0,
             epsilon: 0.015, // epsilon: 0.0010,
             //
             k_scale: 3.0, // k_scale: 1.0,
@@ -144,6 +145,7 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             hubs_expanded: true,
             broken_expanded: true,
             graph_expanded: true,
+            graph_show_advanced: true,
             //
             show_crawl_window: false,
             crawl_input_url: String::from("https://httpbin.org/"),
@@ -282,6 +284,8 @@ impl ViewEgui {
             match message {
                 AppResponse::Crawler(event) => match event {
                     // TODO: clean this up
+                    // TODO: instead of a node per url, have the nodes be domains and when
+                    // clicking in one a new graph is shown for all the /path pages in it.
                     CrawlEvent::Page(metadata) => {
                         // activity tab.
                         // push element. limit the ammount.
@@ -435,13 +439,12 @@ impl ViewEgui {
                             });
 
                             ui.menu_button("Graph", |ui| {
-                                if ui.button("🔄 Center").clicked() {
+                                if ui.button("🎯 Center").clicked() {
                                     self.free_graph_movement = !self.free_graph_movement;
                                     println!("Center");
                                 }
-                                if ui.button("🔄 Reorganize").clicked() {
-                                    // TODO:
-                                    // Self::distribute_nodes_circle_generic(&mut self.graph);
+                                if ui.button("🔀 Reorganize").clicked() {
+                                    Self::distribute_nodes_circle_generic(&mut self.graph);
                                     println!("Reorganize");
                                 }
                             });
@@ -633,7 +636,12 @@ impl ViewEgui {
                                                                     ui.spacing_mut()
                                                                         .item_spacing
                                                                         .x = 0.0;
-                                                                    ui.label(entry.domain.clone());
+                                                                    ui.add(
+                                                                        egui::Label::new(
+                                                                            entry.domain.clone(),
+                                                                        )
+                                                                        .truncate(),
+                                                                    );
                                                                     let weak_color = ui
                                                                         .visuals()
                                                                         .weak_text_color();
@@ -1168,6 +1176,9 @@ impl ViewEgui {
                                 ui.separator();
                                 ui.add_space(4.0);
                                 //
+                                let spacing = ui.spacing_mut();
+                                spacing.slider_width = 60.0; // Adjust this number until it fits your card
+                                //
                                 egui::Grid::new("graph_details_grid")
                                     .num_columns(2)
                                     .striped(true)
@@ -1191,82 +1202,104 @@ impl ViewEgui {
 
                                 ui.horizontal(|ui| {
                                     // NOTE: icons needed
-                                    if ui.button("@ Center").clicked() {
+                                    if ui.button("🎯 Center").clicked() {
                                         self.free_graph_movement = !self.free_graph_movement;
                                     }
-                                    if ui.button("@ Reorganize").clicked() {
+                                    if ui.button("🔀 Reorganize").clicked() {
                                         Self::distribute_nodes_circle_generic(&mut self.graph);
                                     }
                                 });
+
+                                ui.separator();
+                                ui.add_space(8.0);
                                 ///////////////
-                                let mut state = egui_graphs::get_layout_state::<
-                                    FruchtermanReingoldWithCenterGravityState,
-                                >(ui, None);
+                                if self.graph_show_advanced {
+                                    let mut state = egui_graphs::get_layout_state::<
+                                        FruchtermanReingoldWithCenterGravityState,
+                                    >(ui, None);
 
-                                ui.horizontal(|ui| {
-                                    ui.checkbox(&mut self.graph_state.is_running, "running");
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.add(
-                                        egui::Slider::new(&mut self.graph_state.delta, 0.001..=0.2), // .text("dt"),
-                                    );
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.add(
-                                        egui::Slider::new(&mut self.graph_state.damping, 0.0..=1.0), // .text("damping"),
-                                    );
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.add(
-                                        egui::Slider::new(
-                                            &mut self.graph_state.max_step,
-                                            0.1..=50.0,
-                                        ), // .text("max_step"),
-                                    );
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.add(
-                                        egui::Slider::new(
-                                            &mut self.graph_state.epsilon,
-                                            1e-5..=1e-1,
-                                        )
-                                        .logarithmic(true), // .text("epsilon"),
-                                    );
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.add(egui::Slider::new(
-                                        &mut self.graph_state.k_scale,
-                                        0.2..=3.0,
-                                    ));
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.add(egui::Slider::new(
-                                        &mut self.graph_state.c_attract,
-                                        0.1..=3.0,
-                                    ));
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.add(egui::Slider::new(
-                                        &mut self.graph_state.c_repulse,
-                                        0.1..=3.0,
-                                    ));
-                                });
+                                    egui::Grid::new("physics_sliders_grid")
+                                        .num_columns(2)
+                                        .spacing([8.0, 4.0]) // Adjust horizontal/vertical spacing as needed
+                                        .show(ui, |ui| {
+                                            ui.label("Delta");
+                                            ui.add(egui::Slider::new(
+                                                &mut self.graph_state.delta,
+                                                0.001..=0.2,
+                                            ));
+                                            ui.end_row();
 
-                                // overwrite widget values
-                                state.base.is_running = self.graph_state.is_running;
-                                state.base.dt = self.graph_state.delta;
-                                state.base.damping = self.graph_state.damping;
-                                state.base.max_step = self.graph_state.max_step;
-                                state.base.epsilon = self.graph_state.epsilon;
-                                state.base.k_scale = self.graph_state.k_scale;
-                                state.base.c_attract = self.graph_state.c_attract;
-                                state.base.c_repulse = self.graph_state.c_repulse;
-                                state.extras.0.enabled = self.graph_state.has_center_gravity;
-                                state.extras.0.params.c = self.graph_state.center_strenght;
+                                            ui.label("Damping");
+                                            ui.add(egui::Slider::new(
+                                                &mut self.graph_state.damping,
+                                                0.0..=1.0,
+                                            ));
+                                            ui.end_row();
 
-                                egui_graphs::set_layout_state::<
-                                    FruchtermanReingoldWithCenterGravityState,
-                                >(ui, state, None);
+                                            ui.label("Max Step");
+                                            ui.add(egui::Slider::new(
+                                                &mut self.graph_state.max_step,
+                                                0.1..=50.0,
+                                            ));
+                                            ui.end_row();
+
+                                            ui.label("Epsilon");
+                                            ui.add(
+                                                egui::Slider::new(
+                                                    &mut self.graph_state.epsilon,
+                                                    1e-5..=1e-1,
+                                                )
+                                                .logarithmic(true),
+                                            );
+                                            ui.end_row();
+
+                                            ui.label("K Scale");
+                                            ui.add(egui::Slider::new(
+                                                &mut self.graph_state.k_scale,
+                                                0.2..=3.0,
+                                            ));
+                                            ui.end_row();
+
+                                            ui.label("C Attract");
+                                            ui.add(egui::Slider::new(
+                                                &mut self.graph_state.c_attract,
+                                                0.1..=3.0,
+                                            ));
+                                            ui.end_row();
+
+                                            ui.label("C Repulse");
+                                            ui.add(egui::Slider::new(
+                                                &mut self.graph_state.c_repulse,
+                                                0.1..=3.0,
+                                            ));
+                                            ui.end_row();
+
+                                            // TODO: consider adding a organize type dropdown to
+                                            // select the function to use when distributing nodes
+                                        });
+
+                                    // overwrite widget values
+                                    state.base.is_running = self.graph_state.is_running;
+                                    state.base.dt = self.graph_state.delta;
+                                    state.base.damping = self.graph_state.damping;
+                                    state.base.max_step = self.graph_state.max_step;
+                                    state.base.epsilon = self.graph_state.epsilon;
+                                    state.base.k_scale = self.graph_state.k_scale;
+                                    state.base.c_attract = self.graph_state.c_attract;
+                                    state.base.c_repulse = self.graph_state.c_repulse;
+                                    state.extras.0.enabled = self.graph_state.has_center_gravity;
+                                    state.extras.0.params.c = self.graph_state.center_strenght;
+
+                                    egui_graphs::set_layout_state::<
+                                        FruchtermanReingoldWithCenterGravityState,
+                                    >(ui, state, None);
+
+                                    ui.separator();
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut self.graph_state.is_running, "Animated");
+                                    ui.checkbox(&mut self.graph_show_advanced, "Advanced");
+                                });
                                 ///////////////
                             }
                         });
