@@ -1,0 +1,27 @@
+- initially a crawl request is sent by the view and redirected into the crawler.
+  - it fetches the pages up to a certain depth, parses them
+  - and sends back results one page at a time through channel events.
+  - the event is picked up by the app and redirected to the view and database
+- on another time, in the scenario of the same request
+  - the app initializes, it asks the database for an index of cached pages
+  - said index is sent to the crawler upon initialization
+  - the initial crawl request is sent by the view, being redirected into the crawler
+  - it checks its index, since it's a match something different happens
+  - a conditional get is sent, if the page has not been modified the app is notified
+  - the app recognizes the event, queries the cached page from the db,
+  - a crawlevent::page is built with the info, just like a normal fetch would
+  - the event is sent to the view.
+
+- problems and considerations
+  - last modified
+    - > Instead of loading the whole index upfront, the crawler should request the cache metadata (ETag or Last-Modified) on demand
+    - > leaner on memory usage. caching millions of page urls on memory just for this simple check may not be ideal.
+  - depth crawl
+    - > If the crawler receives a 304 Not Modified and simply notifies the App, the crawler stops processing that branch. It does not have the HTML body to parse the links required to continue crawling to the next depth.
+    - > Store the extracted links in the database alongside the HTML. When the App receives the "Not Modified" event, it queries the DB for those links and sends them back to the crawler to continue its depth traversal.
+  - separation of concerns
+    - > instead of having the App build the CrawlEvent::Page with cached data, have the crawler do it instead
+    - > keep the Crawler as the single source of truth for crawl events.
+  - tokio
+    - > consider putting the app inside tokio, for better communication. (tokio::main macro on main())
+
