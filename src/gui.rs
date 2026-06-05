@@ -1,5 +1,7 @@
 // src/gui.rs
-use crate::app::{AppRequest, AppResponse, CrawlCommand, CrawlEvent, CrawlRequest, PageMetadata};
+use crate::app::{
+    AppRequest, AppResponse, CrawlCommand, CrawlError, CrawlEvent, CrawlRequest, PageMetadata,
+};
 // use crossbeam_channel as crossbeam;
 use crossbeam_channel as crossbeam;
 use eframe;
@@ -67,9 +69,11 @@ pub struct ViewEgui {
     graph: egui_graphs::Graph<NodeData, (), Undirected>,
     graph_selected_node: Option<NodeIndex>,
     //
-    pub show_markdown_window: bool,
-    pub show_outbound_window: bool,
-    pub markdown_text: String,
+    show_markdown_window: bool,
+    show_outbound_window: bool,
+    show_about_window: bool,
+    markdown_text: String,
+    markdown_url: Option<Url>,
     //
     left_tab: LeftTab,
     free_graph_movement: bool,
@@ -88,11 +92,13 @@ pub struct ViewEgui {
     //
     tab_activity_data: VecDeque<ActivityMetadata>,
     tab_queued_data: VecDeque<(usize, Url)>,
+    tab_errors_data: VecDeque<(Url, CrawlError)>,
     hubs_data: Vec<(usize, Url)>,
+    broken_data: Vec<(StatusCode, Url)>,
     info_crawled: usize,
     info_queued: usize,
     info_skipped: usize,
-    info_average: usize,
+    info_average_sum: u128,
 }
 
 // ui.horizontal(|ui| {
@@ -162,7 +168,9 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             graph: graph,
             show_markdown_window: false,
             show_outbound_window: false,
+            show_about_window: false,
             markdown_text: String::from(text),
+            markdown_url: None,
             left_tab: LeftTab::Activity,
             free_graph_movement: false,
             node_details_expanded: true,
@@ -171,7 +179,7 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             graph_expanded: true,
             //
             show_crawl_window: true,
-            crawl_input_url: String::from("https://httpbin.org/"),
+            crawl_input_url: String::from("https://raydroplet.dev/log/"),
             crawl_input_depth: 0,
             //
             app_rx: app_response_rx,
@@ -179,12 +187,14 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             //
             tab_activity_data: VecDeque::new(),
             tab_queued_data: VecDeque::new(),
+            tab_errors_data: VecDeque::new(),
             hubs_data: Vec::new(),
+            broken_data: Vec::new(),
             //
             info_crawled: 0,
             info_queued: 0,
             info_skipped: 0,
-            info_average: 0,
+            info_average_sum: 0,
         }
     }
 
@@ -340,6 +350,12 @@ impl ViewEgui {
                         let pos = self.hubs_data.partition_point(|(n, _)| *n >= item.0);
                         self.hubs_data.insert(pos, item);
 
+                        // broken widget
+                        if metadata.status.is_server_error() || metadata.status.is_client_error() {
+                            self.broken_data
+                                .push((metadata.status, metadata.url.clone()));
+                        }
+
                         // node
                         let metadata_url = metadata.url.clone();
                         let mut parent_pos = Pos2::default();
@@ -383,7 +399,9 @@ impl ViewEgui {
                                 // if said node doesn't exist, create an empty one
                                 let location: Pos2 =
                                     Pos2::new(parent_pos.x + jitter_x, parent_pos.y + jitter_y);
-                                let label = String::from(link.domain().unwrap_or("None"));
+                                let label = String::from(
+                                    link.domain().expect("domain must always be valid"),
+                                );
                                 let data = NodeData::Leaf(link.clone());
                                 let index = self.graph.add_node_with_label_and_location(
                                     data,
@@ -405,7 +423,14 @@ impl ViewEgui {
                                 self.graph.add_edge(source_index, target_index, ());
                             }
                         }
+
+                        // info panel
                         self.info_crawled += 1;
+                        self.info_average_sum += metadata
+                            .timestamp_end
+                            .duration_since(metadata.timestamp_start)
+                            .expect("time went backwards")
+                            .as_millis();
                     }
                     CrawlEvent::Queued(url, count) => {
                         // queued tab.
@@ -420,10 +445,37 @@ impl ViewEgui {
                     CrawlEvent::Skipped(_url) => {
                         self.info_skipped += 1;
                     }
-                    CrawlEvent::Error(url, error) => {}
+                    CrawlEvent::Error(url, error) => {
+                        self.tab_errors_data.push_front((url, error));
+                        if self.tab_errors_data.len() > TABS_ENTRY_COUNT {
+                            self.tab_errors_data.pop_back();
+                        }
+                    }
                 },
-                AppResponse::Markdown(url, content) => {}
+                AppResponse::Markdown(url, content) => {
+                    self.markdown_text = content;
+                    self.markdown_url = Some(url);
+                }
             }
+        }
+    }
+
+    fn update_markdown_window(&self) {
+        if !self.show_markdown_window {
+            return;
+        }
+
+        // get the current node url
+        let url_opt = self
+            .graph_selected_node
+            .and_then(|index| self.graph.node(index))
+            .map(|node| match node.payload() {
+                NodeData::Page(metadata) => metadata.url.clone(),
+                NodeData::Leaf(url) => url.clone(),
+            });
+        if let Some(url) = url_opt {
+            println!("markdown request sent for {}", url.clone());
+            let _ = self.app_tx.send(AppRequest::Markdown(url));
         }
     }
 
@@ -432,6 +484,7 @@ impl ViewEgui {
             match event {
                 Event::NodeClick(payload) => {
                     self.graph_selected_node = Some(NodeIndex::new(payload.id));
+                    self.update_markdown_window();
                     println!("Node {:?} was clicked", payload);
                 }
                 // Catch-all for other events like Pan, Zoom, or Edge selections
@@ -475,42 +528,41 @@ impl ViewEgui {
                         // 5. Draw the menu bar
                         egui::MenuBar::new().ui(ui, |ui| {
                             ui.menu_button("File", |ui| {
-                                if ui.button("📂 Open Graph...").clicked() {
-                                    println!("Open");
-                                }
-                                if ui.button("💾 Save State").clicked() {
-                                    println!("Save");
-                                }
-                                ui.separator();
                                 if ui.button("❌ Exit").clicked() {
                                     ui.send_viewport_cmd(egui::ViewportCommand::Close);
                                 }
                             });
 
                             ui.menu_button("View", |ui| {
-                                if ui.button("🔄 Reset Layout").clicked() {
-                                    println!("Reset");
-                                }
-                                if ui.button("⚙ Settings").clicked() {
-                                    println!("Settings");
+                                if ui.button("🔍 Toggle Panels").clicked() {
+                                    self.node_details_expanded = !self.node_details_expanded;
+                                    self.graph_expanded = !self.graph_expanded;
+                                    self.hubs_expanded = !self.hubs_expanded;
+                                    self.broken_expanded = !self.broken_expanded;
                                 }
                             });
 
                             ui.menu_button("Graph", |ui| {
-                                if ui.button("🎯 Center").clicked() {
+                                if ui.button("Center").clicked() {
                                     self.free_graph_movement = !self.free_graph_movement;
                                     println!("Center");
                                 }
-                                if ui.button("🔀 Reorganize").clicked() {
+                                if ui.button("Reorganize").clicked() {
                                     Self::distribute_nodes_circle_generic(&mut self.graph);
                                     println!("Reorganize");
                                 }
                             });
                             if ui.button("Crawl").clicked() {
-                                self.show_crawl_window = true;
+                                self.show_crawl_window = !self.show_crawl_window;
+                                if self.show_crawl_window {
+                                    self.show_about_window = false;
+                                }
                             };
                             if ui.button("About").clicked() {
-                                // TODO:
+                                self.show_about_window = !self.show_about_window;
+                                if self.show_about_window {
+                                    self.show_crawl_window = false; // out of the way!
+                                }
                             };
                         });
                     });
@@ -527,14 +579,11 @@ impl ViewEgui {
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ui.ctx(), |ui| {
-                    ui.label("Configure your crawling job here.");
-                    ui.add_space(8.0);
-
                     egui::Grid::new("crawl_input_grid")
                         .num_columns(2)
                         .spacing([10.0, 10.0])
                         .show(ui, |ui| {
-                            ui.label("Root URL:");
+                            ui.label("URL:");
                             ui.text_edit_singleline(&mut self.crawl_input_url);
                             ui.end_row();
 
@@ -562,15 +611,38 @@ impl ViewEgui {
                             close_window = true;
                         }
 
-                        if ui.button("⏹ End Session").clicked() {
-                            let command = CrawlCommand::Terminate;
-                            let _ = self.app_tx.send(AppRequest::Crawler(command));
+                        ui.add_enabled_ui(false, |ui| {
+                            if ui.button("⏹ Terminate").clicked() {
+                                let command = CrawlCommand::Terminate;
+                                let _ = self.app_tx.send(AppRequest::Crawler(command));
 
-                            // close_window = true;
-                        }
+                                // close_window = true;
+                            };
+                        });
                     });
                 });
         }
+
+        let mut is_open = self.show_about_window;
+        egui::Window::new("About")
+            .open(&mut is_open)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .resizable(false)
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.heading("Crawler-rs");
+                    ui.label(RichText::new("version 0.1.0").weak());
+                });
+                ui.separator();
+                ui.label("This application does awesome things.");
+                ui.horizontal(|ui| {
+                    ui.label("Source code:");
+                    ui.hyperlink_to("GitHub", "https://github.com/raydroplet/crawler-rs");
+                });
+            });
+        // Sync the state back (this handles the user clicking the 'X' button)
+        self.show_about_window = is_open;
 
         // 3. Safely update the struct field now that the borrow is gone
         if close_window {
@@ -617,6 +689,9 @@ impl ViewEgui {
 
                         ui.add_space(4.0);
 
+                        let avg = self.info_average_sum
+                            .checked_div(self.info_crawled as u128)
+                            .unwrap_or(0);
                         ui.columns(2, |cols| {
                             cols[0].group(|ui| {
                                 ui.vertical_centered_justified(|ui| {
@@ -628,7 +703,7 @@ impl ViewEgui {
                             });
                             cols[1].group(|ui| {
                                 ui.vertical_centered_justified(|ui| {
-                                    ui.heading("340ms");
+                                    ui.heading(format!("{avg:.0}ms"));
                                     ui.label(RichText::new("Average").weak());
                                 });
                             });
@@ -793,18 +868,7 @@ impl ViewEgui {
                                     egui::ScrollArea::vertical()
                                         .auto_shrink([false, false])
                                         .show(ui, |ui| {
-                                            // Error data: (domain, path, error_string)
-                                            let errors = vec![
-                                                ("wikipedia.com", "/some-broken-page", "Timeout"),
-                                                ("bad-domain.com", "/", "DNS Res"),
-                                                (
-                                                    "wikipedia.com",
-                                                    "/another-long-path-that-fails",
-                                                    "Refused",
-                                                ),
-                                            ];
-
-                                            for (domain, path, err_str) in errors {
+                                            for (url, error) in &self.tab_errors_data {
                                                 ui.horizontal(|ui| {
                                                     // Generic Error Badge
                                                     ui.label(
@@ -822,9 +886,9 @@ impl ViewEgui {
                                                         |ui| {
                                                             // Display the error string on the right side instead of the timestamp
                                                             ui.label(
-                                                                RichText::new(err_str)
-                                                                    .color(Color32::LIGHT_RED),
-                                                            );
+                                                                RichText::new(error.name())
+                                                                    .color(Color32::LIGHT_RED)
+                                                            ).on_hover_text(error.to_string());
 
                                                             ui.with_layout(
                                                                 egui::Layout::left_to_right(
@@ -834,7 +898,7 @@ impl ViewEgui {
                                                                     ui.spacing_mut()
                                                                         .item_spacing
                                                                         .x = 0.0;
-                                                                    ui.label(domain);
+                                                                    ui.label(url.domain().expect("domain must always be valid"));
                                                                     let weak_color = ui
                                                                         .visuals()
                                                                         .weak_text_color();
@@ -842,7 +906,7 @@ impl ViewEgui {
                                                                         .override_text_color =
                                                                         Some(weak_color);
                                                                     ui.add(
-                                                                        egui::Label::new(path)
+                                                                        egui::Label::new(url.path())
                                                                             .truncate(),
                                                                     );
                                                                 },
@@ -888,15 +952,39 @@ impl ViewEgui {
                         .constrain_to(central_rect)
                         .default_size([500.0, 400.0])
                         .show(ui.ctx(), |ui| {
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut self.markdown_text)
-                                        .font(egui::TextStyle::Monospace)
-                                        .code_editor()
-                                        .interactive(false)
-                                        .desired_width(f32::INFINITY),
-                                );
-                            });
+                            // check if a node is selected (no node selected)
+                            // check if the node selected is equal to the markdown we have (not queried)
+
+                            let display_text = self
+                                .graph_selected_node
+                                .and_then(|index| self.graph.node(index))
+                                .map(|node| match node.payload() {
+                                    NodeData::Page(metadata) => {
+                                        Some(&metadata.url) == self.markdown_url.as_ref()
+                                    }
+                                    NodeData::Leaf(url) => Some(url) == self.markdown_url.as_ref(),
+                                });
+
+                            match display_text {
+                                Some(node_matches) => {
+                                    if node_matches {
+                                        egui::ScrollArea::vertical().show(ui, |ui| {
+                                            ui.add(
+                                                egui::TextEdit::multiline(&mut self.markdown_text)
+                                                    .font(egui::TextStyle::Monospace)
+                                                    .code_editor()
+                                                    .interactive(false)
+                                                    .desired_width(f32::INFINITY),
+                                            );
+                                        });
+                                    } else {
+                                        ui.label("Invalid selection.");
+                                    }
+                                }
+                                None => {
+                                    ui.label("No node selected.");
+                                }
+                            }
                         });
                 }
 
@@ -1216,6 +1304,8 @@ impl ViewEgui {
                                                 if ui.button("📝 Markdown").clicked() {
                                                     self.show_markdown_window =
                                                         !self.show_markdown_window;
+
+                                                    self.update_markdown_window();
                                                 }
                                                 if ui.button("🕸 Outbound").clicked() {
                                                     self.show_outbound_window =
@@ -1255,7 +1345,7 @@ impl ViewEgui {
                                                 if ui.button("Crawl Page").clicked() {
                                                     let request = CrawlRequest {
                                                         source: url.clone(),
-                                                        depth: self.crawl_input_depth,
+                                                        depth: 0,
                                                     };
                                                     let command = CrawlCommand::Request(request);
                                                     let _ = self
@@ -1491,13 +1581,12 @@ impl ViewEgui {
                                                                     ),
                                                                     |ui| {
                                                                         ui.add(
-                                                                    egui::Label::new(
-                                                                        url.domain().expect(
-                                                                            "must always be valid",
-                                                                        ),
-                                                                    )
-                                                                    .truncate(),
-                                                                );
+                                                                            egui::Label::new(
+                                                                                url.domain().expect(
+                                                                                    "must always be valid",
+                                                                                ),
+                                                                            ).truncate(),
+                                                                        );
                                                                         let weak_color = ui
                                                                             .visuals()
                                                                             .weak_text_color();
@@ -1562,27 +1651,63 @@ impl ViewEgui {
                                 );
                             });
 
-                            let broken = vec![
-                                ("broken-website.web", 404),
-                                ("123.com", 401),
-                                ("square.circle", 418),
-                            ];
-                            if self.broken_expanded {
+                            if self.broken_expanded && self.broken_data.len() > 0 {
                                 ui.add_space(4.0);
                                 ui.separator();
                                 ui.add_space(4.0);
 
-                                for (address, code) in broken.iter() {
-                                    ui.horizontal(|ui| {
-                                        ui.label(*address);
-                                        add_stretched_right_cell(ui, |ui| {
-                                            ui.label(
-                                                RichText::new(format!(" {} ", code))
-                                                    .background_color(Color32::from_rgb(80, 10, 10))
-                                                    .color(Color32::WHITE),
-                                            );
-                                        });
-                                    });
+                                for (status, url) in self.broken_data.iter() {
+                                            ui.horizontal(|ui| {
+                                                ui.vertical(|ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.with_layout(
+                                                            egui::Layout::right_to_left(
+                                                                egui::Align::Center,
+                                                            ),
+                                                            |ui| {
+                                                                ui.label(
+                                                                    RichText::new(format!(
+                                                                        " {} ",
+                                                                        status.as_u16()
+                                                                    ))
+                                                                    .background_color(Color32::from_rgb(
+                                                                        80, 10, 10,
+                                                                    ))
+                                                                    .color(Color32::WHITE),
+                                                                );
+                                                                ui.spacing_mut().item_spacing.x =
+                                                                    0.0;
+                                                                ui.with_layout(
+                                                                    egui::Layout::left_to_right(
+                                                                        egui::Align::Center,
+                                                                    ),
+                                                                    |ui| {
+                                                                        ui.add(
+                                                                            egui::Label::new(
+                                                                                url.domain().expect(
+                                                                                    "must always be valid",
+                                                                                ),
+                                                                            ).truncate(),
+                                                                        );
+                                                                        let weak_color = ui
+                                                                            .visuals()
+                                                                            .weak_text_color();
+                                                                        ui.visuals_mut()
+                                                                            .override_text_color =
+                                                                            Some(weak_color);
+                                                                        ui.add(
+                                                                            egui::Label::new(
+                                                                                url.path(),
+                                                                            )
+                                                                            .truncate(),
+                                                                        );
+                                                                    },
+                                                                );
+                                                            },
+                                                        );
+                                                    });
+                                                });
+                                            });
                                 }
                             }
                         });

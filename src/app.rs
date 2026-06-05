@@ -1,12 +1,14 @@
 pub use crate::crawler::{CrawlCommand, CrawlError, CrawlRequest, PageMetadata};
 use crate::crawler::{CrawlResponse, Url, WebCrawler};
 use crate::gui::ViewEgui;
+use html_to_markdown_rs::convert;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::thread;
 
 pub struct App {
-    pages: HashMap<Url, String>,
+    pages: RefCell<HashMap<Url, String>>,
 }
 
 pub enum AppRequest {
@@ -29,7 +31,7 @@ pub enum AppResponse {
 impl App {
     pub fn new() -> Self {
         Self {
-            pages: HashMap::new(),
+            pages: HashMap::new().into(),
             //
         }
     }
@@ -92,7 +94,9 @@ impl App {
                                     page.metadata.discovered_links.len()
                                 );
                                 // caches the page in case the gui asks for its contents
-                                self.pages.insert(page.metadata.url.clone(), page.content);
+                                self.pages
+                                    .borrow_mut()
+                                    .insert(page.metadata.url.clone(), page.content);
                                 let event = CrawlEvent::Page(page.metadata);
                                 if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
                                     return true;
@@ -116,6 +120,11 @@ impl App {
                             }
                             CrawlResponse::Error(url, err) => {
                                 println!("error: {} -> {}", url, err);
+                                //
+                                let event = CrawlEvent::Error(url, err);
+                                if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
+                                    return true;
+                                };
                             }
                         },
                         Err(err) => {
@@ -153,7 +162,21 @@ impl App {
                                     }
                                 }
                                 AppRequest::Markdown(url) => {
-                                    // TODO:
+                                    if let Some(content) = self.pages.borrow_mut().get(&url) {
+                                        let markdown = match convert(&content, None) {
+                                            Ok(result) => result.content.unwrap_or_default(),
+                                            Err(err) => {
+                                                eprintln!("conversion failed: {err}");
+                                                String::from("Failed to parse html into markdown.")
+                                            }
+                                        };
+                                        if view_response_tx
+                                            .send(AppResponse::Markdown(url, markdown))
+                                            .is_err()
+                                        {
+                                            return true;
+                                        };
+                                    }
                                 }
                             }
                         }
