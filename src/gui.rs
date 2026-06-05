@@ -460,6 +460,41 @@ impl ViewEgui {
         }
     }
 
+    fn widget_url(ui: &mut egui::Ui, url: &Url, vertical: bool) {
+        let fancy_url = |ui: &mut egui::Ui| {
+            let mut text =
+                egui::RichText::new(url.domain().expect("url domain must always be valid"))
+                    .size(12.0);
+
+            if vertical {
+                text = text.strong();
+            }
+
+            ui.add(egui::Label::new(text).truncate());
+
+            // Mute the path so the domain stands out as the primary identifier
+            ui.add({
+                egui::Label::new(
+                    egui::RichText::new(url.path())
+                        .color(ui.visuals().weak_text_color())
+                        .size(10.0),
+                )
+                .truncate()
+            });
+        };
+
+        if !vertical {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                fancy_url(ui);
+            });
+        } else {
+            ui.vertical_centered(|ui| {
+                fancy_url(ui);
+            });
+        }
+    }
+
     fn update_markdown_window(&self) {
         if !self.show_markdown_window {
             return;
@@ -761,34 +796,9 @@ impl ViewEgui {
                                                             );
 
                                                             // 4. Fill the remaining middle space with the truncated address
-                                                            ui.with_layout(
-                                                                egui::Layout::left_to_right(
-                                                                    egui::Align::Center,
-                                                                ),
-                                                                |ui| {
-                                                                    ui.spacing_mut()
-                                                                        .item_spacing
-                                                                        .x = 0.0;
-                                                                    ui.add(
-                                                                        egui::Label::new(
-                                                                            entry.domain.clone(),
-                                                                        )
-                                                                        .truncate(),
-                                                                    );
-                                                                    let weak_color = ui
-                                                                        .visuals()
-                                                                        .weak_text_color();
-                                                                    ui.visuals_mut()
-                                                                        .override_text_color =
-                                                                        Some(weak_color);
-                                                                    ui.add(
-                                                                        egui::Label::new(
-                                                                            entry.path.clone(),
-                                                                        )
-                                                                        .truncate(),
-                                                                    );
-                                                                },
-                                                            );
+                                                            let url = Url::parse(&format!("https://{}{}", entry.domain, entry.path))
+                                                                .expect("domain must always be valid.");
+                                                            Self::widget_url(ui, &url, false);
                                                         },
                                                     );
                                                 });
@@ -890,27 +900,7 @@ impl ViewEgui {
                                                                     .color(Color32::LIGHT_RED)
                                                             ).on_hover_text(error.to_string());
 
-                                                            ui.with_layout(
-                                                                egui::Layout::left_to_right(
-                                                                    egui::Align::Center,
-                                                                ),
-                                                                |ui| {
-                                                                    ui.spacing_mut()
-                                                                        .item_spacing
-                                                                        .x = 0.0;
-                                                                    ui.label(url.domain().expect("domain must always be valid"));
-                                                                    let weak_color = ui
-                                                                        .visuals()
-                                                                        .weak_text_color();
-                                                                    ui.visuals_mut()
-                                                                        .override_text_color =
-                                                                        Some(weak_color);
-                                                                    ui.add(
-                                                                        egui::Label::new(url.path())
-                                                                            .truncate(),
-                                                                    );
-                                                                },
-                                                            );
+                                                            Self::widget_url(ui, url, false);
                                                         },
                                                     );
                                                 });
@@ -1228,26 +1218,7 @@ impl ViewEgui {
                                                 .corner_radius(6.0)
                                                 .inner_margin(8.0)
                                                 .show(ui, |ui| {
-                                                    ui.vertical_centered(|ui| {
-                                                        ui.label(
-                                                        egui::RichText::new(
-                                                            metadata.url.domain().expect(
-                                                                "url domain must always be valid",
-                                                            ),
-                                                        )
-                                                        .strong()
-                                                        .size(12.0),
-                                                    );
-
-                                                        // Mute the path so the domain stands out as the primary identifier
-                                                        ui.label(
-                                                            egui::RichText::new(
-                                                                metadata.url.path(),
-                                                            )
-                                                            .color(ui.visuals().weak_text_color())
-                                                            .size(10.0),
-                                                        );
-                                                    });
+                                                    Self::widget_url(ui, &metadata.url, true);
                                                 });
                                             ui.add_space(8.0);
 
@@ -1319,23 +1290,7 @@ impl ViewEgui {
                                                 .corner_radius(6.0)
                                                 .inner_margin(8.0)
                                                 .show(ui, |ui| {
-                                                    ui.vertical_centered(|ui| {
-                                                        ui.label(
-                                                        egui::RichText::new(url.domain().expect(
-                                                            "url domain must always be valid",
-                                                        ))
-                                                        .strong()
-                                                        .size(12.0),
-                                                    );
-
-                                                        ui.label(
-                                                            egui::RichText::new(url.path())
-                                                                .color(
-                                                                    ui.visuals().weak_text_color(),
-                                                                )
-                                                                .size(10.0),
-                                                        );
-                                                    });
+                                                    Self::widget_url(ui, &url, true);
                                                 });
                                             ui.vertical_centered(|ui| {
                                                 ui.add_space(8.0);
@@ -1461,7 +1416,8 @@ impl ViewEgui {
                                                         &mut self.graph_state.epsilon,
                                                         1e-5..=1e-1,
                                                     )
-                                                    .logarithmic(true),
+                                                    .logarithmic(true)
+                                                    .step_by(0.001),
                                                 );
                                                 ui.end_row();
 
@@ -1580,24 +1536,8 @@ impl ViewEgui {
                                                                         egui::Align::Center,
                                                                     ),
                                                                     |ui| {
-                                                                        ui.add(
-                                                                            egui::Label::new(
-                                                                                url.domain().expect(
-                                                                                    "must always be valid",
-                                                                                ),
-                                                                            ).truncate(),
-                                                                        );
-                                                                        let weak_color = ui
-                                                                            .visuals()
-                                                                            .weak_text_color();
-                                                                        ui.visuals_mut()
-                                                                            .override_text_color =
-                                                                            Some(weak_color);
-                                                                        ui.add(
-                                                                            egui::Label::new(
-                                                                                url.path(),
-                                                                            )
-                                                                            .truncate(),
+                                                                        Self::widget_url(
+                                                                            ui, &url, false,
                                                                         );
                                                                     },
                                                                 );
@@ -1657,57 +1597,31 @@ impl ViewEgui {
                                 ui.add_space(4.0);
 
                                 for (status, url) in self.broken_data.iter() {
+                                    ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
                                             ui.horizontal(|ui| {
-                                                ui.vertical(|ui| {
-                                                    ui.horizontal(|ui| {
-                                                        ui.with_layout(
-                                                            egui::Layout::right_to_left(
-                                                                egui::Align::Center,
-                                                            ),
-                                                            |ui| {
-                                                                ui.label(
-                                                                    RichText::new(format!(
-                                                                        " {} ",
-                                                                        status.as_u16()
-                                                                    ))
-                                                                    .background_color(Color32::from_rgb(
-                                                                        80, 10, 10,
-                                                                    ))
-                                                                    .color(Color32::WHITE),
-                                                                );
-                                                                ui.spacing_mut().item_spacing.x =
-                                                                    0.0;
-                                                                ui.with_layout(
-                                                                    egui::Layout::left_to_right(
-                                                                        egui::Align::Center,
-                                                                    ),
-                                                                    |ui| {
-                                                                        ui.add(
-                                                                            egui::Label::new(
-                                                                                url.domain().expect(
-                                                                                    "must always be valid",
-                                                                                ),
-                                                                            ).truncate(),
-                                                                        );
-                                                                        let weak_color = ui
-                                                                            .visuals()
-                                                                            .weak_text_color();
-                                                                        ui.visuals_mut()
-                                                                            .override_text_color =
-                                                                            Some(weak_color);
-                                                                        ui.add(
-                                                                            egui::Label::new(
-                                                                                url.path(),
-                                                                            )
-                                                                            .truncate(),
-                                                                        );
-                                                                    },
-                                                                );
-                                                            },
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.label(
+                                                            RichText::new(format!(
+                                                                " {} ",
+                                                                status.as_u16()
+                                                            ))
+                                                            .background_color(Color32::from_rgb(
+                                                                80, 10, 10,
+                                                            ))
+                                                            .color(Color32::WHITE),
                                                         );
-                                                    });
-                                                });
+                                                        ui.spacing_mut().item_spacing.x = 0.0;
+                                                        Self::widget_url(ui, url, false);
+                                                    },
+                                                );
                                             });
+                                        });
+                                    });
                                 }
                             }
                         });
