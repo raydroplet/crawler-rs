@@ -1,4 +1,4 @@
-use crawler_rs::app::{App};
+use crawler_rs::app::App;
 
 fn main() {
     let mut app = App::new();

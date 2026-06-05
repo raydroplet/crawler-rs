@@ -1,16 +1,18 @@
 // src/gui.rs
 use crate::app::{AppRequest, AppResponse, CrawlCommand, CrawlEvent, CrawlRequest, PageMetadata};
 // use crossbeam_channel as crossbeam;
+use crossbeam_channel as crossbeam;
 use eframe;
 use egui::{Color32, Pos2, RichText};
 use egui_graphs::FruchtermanReingoldWithCenterGravityState;
+use egui_graphs::events::Event;
 use petgraph::{
     /* Directed, */ Undirected,
     stable_graph::{DefaultIx, NodeIndex, StableGraph},
 };
 use rand::RngExt;
 use reqwest::{StatusCode, Url};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::f32::consts::TAU;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,6 +25,12 @@ enum LeftTab {
     Errors,
 }
 
+#[derive(Clone)]
+enum NodeData {
+    Page(PageMetadata),
+    Leaf(Url),
+}
+
 struct ActivityMetadata {
     status: StatusCode,
     domain: String,
@@ -32,7 +40,7 @@ struct ActivityMetadata {
 
 //////////////////
 
-const ACTIVITY_ENTRY_COUNT: usize = 128;
+const TABS_ENTRY_COUNT: usize = 128;
 struct GraphState {
     is_running: bool,
     show_advanced: bool,
@@ -54,7 +62,11 @@ pub struct ViewEgui {
     //
     graph_state: GraphState,
     graph_lookup: HashMap<Url, NodeIndex>,
-    graph: egui_graphs::Graph<Option<PageMetadata>, (), Undirected>,
+    graph_event_tx: crossbeam::Sender<Event>,
+    graph_event_rx: crossbeam::Receiver<Event>,
+    graph: egui_graphs::Graph<NodeData, (), Undirected>,
+    graph_selected_node: Option<NodeIndex>,
+    //
     pub show_markdown_window: bool,
     pub show_outbound_window: bool,
     pub markdown_text: String,
@@ -74,7 +86,13 @@ pub struct ViewEgui {
     app_rx: flume::Receiver<AppResponse>,
     app_tx: flume::Sender<AppRequest>,
     //
-    activity_tab_data: VecDeque<ActivityMetadata>,
+    tab_activity_data: VecDeque<ActivityMetadata>,
+    tab_queued_data: VecDeque<(usize, Url)>,
+    hubs_data: Vec<(usize, Url)>,
+    info_crawled: usize,
+    info_queued: usize,
+    info_skipped: usize,
+    info_average: usize,
 }
 
 // ui.horizontal(|ui| {
@@ -133,9 +151,14 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             center_strenght: 0.30,
         };
 
+        let (graph_event_tx, graph_event_rx) = crossbeam::unbounded();
+
         Self {
             graph_state: state,
             graph_lookup: HashMap::new(),
+            graph_event_tx: graph_event_tx,
+            graph_event_rx: graph_event_rx,
+            graph_selected_node: None,
             graph: graph,
             show_markdown_window: false,
             show_outbound_window: false,
@@ -147,14 +170,21 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             broken_expanded: true,
             graph_expanded: true,
             //
-            show_crawl_window: false,
+            show_crawl_window: true,
             crawl_input_url: String::from("https://httpbin.org/"),
             crawl_input_depth: 0,
             //
             app_rx: app_response_rx,
             app_tx: app_request_tx,
             //
-            activity_tab_data: VecDeque::new(),
+            tab_activity_data: VecDeque::new(),
+            tab_queued_data: VecDeque::new(),
+            hubs_data: Vec::new(),
+            //
+            info_crawled: 0,
+            info_queued: 0,
+            info_skipped: 0,
+            info_average: 0,
         }
     }
 
@@ -173,8 +203,8 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
         )
     }
 
-    pub fn distribute_nodes_circle_generic<Ty: petgraph::EdgeType>(
-        g: &mut egui_graphs::Graph<Option<PageMetadata>, (), Ty, petgraph::stable_graph::DefaultIx>,
+    fn distribute_nodes_circle_generic<Ty: petgraph::EdgeType>(
+        g: &mut egui_graphs::Graph<NodeData, (), Ty, petgraph::stable_graph::DefaultIx>,
     ) {
         let n_usize = core::cmp::max(g.node_count(), 1);
         if n_usize == 0 {
@@ -208,14 +238,13 @@ impl ViewEgui {
         g
     }
 
-    fn generate_basic_graph() -> egui_graphs::Graph<Option<PageMetadata>, (), Undirected, DefaultIx>
-    {
+    fn generate_basic_graph() -> egui_graphs::Graph<NodeData, (), Undirected, DefaultIx> {
         let petgraph: StableGraph<(), (), Undirected, DefaultIx> =
             Self::generate_random_petgraph(100, 300);
 
-        let mut empty_graph: StableGraph<Option<PageMetadata>, (), Undirected, DefaultIx> =
+        let mut empty_graph: StableGraph<NodeData, (), Undirected, DefaultIx> =
             StableGraph::default();
-        let graph: egui_graphs::Graph<Option<PageMetadata>, (), Undirected, DefaultIx> =
+        let graph: egui_graphs::Graph<NodeData, (), Undirected, DefaultIx> =
             egui_graphs::Graph::from(&empty_graph);
         graph
     }
@@ -279,7 +308,7 @@ impl ViewEgui {
     }
 
     ////////
-    fn poll_events(&mut self) {
+    fn poll_channel_events(&mut self) {
         if let Ok(message) = self.app_rx.try_recv() {
             match message {
                 AppResponse::Crawler(event) => match event {
@@ -300,19 +329,27 @@ impl ViewEgui {
                             timestamp: timepoint,
                         };
 
-                        self.activity_tab_data.push_front(activity_metadata);
-                        if self.activity_tab_data.len() > ACTIVITY_ENTRY_COUNT {
-                            self.activity_tab_data.pop_back();
+                        self.tab_activity_data.push_front(activity_metadata);
+                        if self.tab_activity_data.len() > TABS_ENTRY_COUNT {
+                            self.tab_activity_data.pop_back();
                         }
+
+                        // hubs card.
+                        // inserts into an already sorted vec
+                        let item = (metadata.discovered_links.len(), metadata.url.clone());
+                        let pos = self.hubs_data.partition_point(|(n, _)| *n >= item.0);
+                        self.hubs_data.insert(pos, item);
 
                         // node
                         let metadata_url = metadata.url.clone();
+                        let mut parent_pos = Pos2::default();
                         let source_index =
                             if let Some(&index) = self.graph_lookup.get(&metadata_url) {
                                 // said page is already present, update it
                                 if let Some(node) = self.graph.node_mut(index) {
                                     // TODO: prune orphan edges down below (for now it only adds)
-                                    *node.payload_mut() = Some(metadata.clone());
+                                    *node.payload_mut() = NodeData::Page(metadata.clone());
+                                    parent_pos = node.location();
                                 }
                                 index
                             } else {
@@ -321,13 +358,14 @@ impl ViewEgui {
                                 // WARN:None? also check similar calls.
                                 // the crawler must always return valid .domain() urls.
                                 let label = String::from(metadata.url.domain().unwrap_or("None"));
-                                let index = self
-                                    .graph
-                                    .add_node_with_label(Some(metadata.clone()), label.clone());
-                                println!("root add_node({})", label);
+                                let index = self.graph.add_node_with_label(
+                                    NodeData::Page(metadata.clone()),
+                                    label.clone(),
+                                );
                                 self.graph_lookup.insert(metadata_url, index);
                                 index
                             };
+
                         // edges
                         // NOTE: here
                         for link in metadata.discovered_links {
@@ -335,28 +373,24 @@ impl ViewEgui {
                                 // get the index of the target node
                                 index
                             } else {
+                                // jitter
+                                let mut rng = rand::rng();
+                                let angle = rng.random_range(0.0..TAU);
+                                let distance = rng.random_range(10.0..50.0);
+                                let jitter_x = angle.cos() * distance;
+                                let jitter_y = angle.sin() * distance;
+
                                 // if said node doesn't exist, create an empty one
+                                let location: Pos2 =
+                                    Pos2::new(parent_pos.x + jitter_x, parent_pos.y + jitter_y);
                                 let label = String::from(link.domain().unwrap_or("None"));
-                                let index = self.graph.add_node_with_label(None, label.clone());
-                                println!("empty add_node({})", label);
+                                let data = NodeData::Leaf(link.clone());
+                                let index = self.graph.add_node_with_label_and_location(
+                                    data,
+                                    label.clone(),
+                                    location,
+                                );
                                 self.graph_lookup.insert(link, index);
-
-                                // 2. Apply initial jitter to avoid division-by-zero explosions
-                                if let Some(node) = self.graph.node_mut(index) {
-                                    let mut rng = rand::rng();
-
-                                    // Pick a random angle (0 to 360 degrees in radians)
-                                    let angle = rng.random_range(0.0..TAU);
-
-                                    // Pick a random distance from the center (e.g., 10 to 50 pixels)
-                                    let distance = rng.random_range(10.0..50.0);
-
-                                    // Convert polar coordinates to X/Y
-                                    let jitter_x = angle.cos() * distance;
-                                    let jitter_y = angle.sin() * distance;
-
-                                    node.set_location(egui::Pos2::new(jitter_x, jitter_y));
-                                }
 
                                 index
                             };
@@ -369,15 +403,39 @@ impl ViewEgui {
                                 .is_none()
                             {
                                 self.graph.add_edge(source_index, target_index, ());
-                                println!("add_edge({:?}, {:?})", source_index, target_index);
                             }
                         }
+                        self.info_crawled += 1;
                     }
-                    CrawlEvent::Queued(url, count) => {}
-                    CrawlEvent::Skipped(url) => {}
+                    CrawlEvent::Queued(url, count) => {
+                        // queued tab.
+                        // push element. limit the ammount.
+                        let item = (count, url);
+                        self.tab_queued_data.push_front(item);
+                        if self.tab_queued_data.len() > TABS_ENTRY_COUNT {
+                            self.tab_queued_data.pop_back();
+                        }
+                        self.info_queued += 1;
+                    }
+                    CrawlEvent::Skipped(_url) => {
+                        self.info_skipped += 1;
+                    }
                     CrawlEvent::Error(url, error) => {}
                 },
                 AppResponse::Markdown(url, content) => {}
+            }
+        }
+    }
+
+    fn poll_graph_events(&mut self) {
+        while let Ok(event) = self.graph_event_rx.try_recv() {
+            match event {
+                Event::NodeClick(payload) => {
+                    self.graph_selected_node = Some(NodeIndex::new(payload.id));
+                    println!("Node {:?} was clicked", payload);
+                }
+                // Catch-all for other events like Pan, Zoom, or Edge selections
+                _ => {}
             }
         }
     }
@@ -403,7 +461,7 @@ impl ViewEgui {
                     // 2. Estimate the width of your menu items.
                     // You may need to tweak this number based on your font size and labels.
                     // "File" + "View" + "Graph" ≈ 150px
-                    let estimated_menu_width = 150.0;
+                    let estimated_menu_width = 200.0;
 
                     // 3. Calculate the padding needed on the left to center it
                     let left_padding = (available_width - estimated_menu_width) / 2.0;
@@ -481,7 +539,7 @@ impl ViewEgui {
                             ui.end_row();
 
                             ui.label("Depth:");
-                            ui.add(egui::DragValue::new(&mut self.crawl_input_depth).range(0..=10));
+                            ui.add(egui::DragValue::new(&mut self.crawl_input_depth).range(0..=1));
                             ui.end_row();
                         });
 
@@ -501,7 +559,7 @@ impl ViewEgui {
                             let command = CrawlCommand::Request(request);
                             let _ = self.app_tx.send(AppRequest::Crawler(command));
 
-                            // close_window = true;
+                            close_window = true;
                         }
 
                         if ui.button("⏹ End Session").clicked() {
@@ -527,7 +585,7 @@ impl ViewEgui {
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.left_tab, LeftTab::Activity, "📈 Activity");
-                    ui.selectable_value(&mut self.left_tab, LeftTab::Queue, "⏳ Queue");
+                    ui.selectable_value(&mut self.left_tab, LeftTab::Queue, "⏳ Queued");
                     ui.selectable_value(&mut self.left_tab, LeftTab::Errors, "❌ Errors");
                 });
 
@@ -542,7 +600,7 @@ impl ViewEgui {
                             cols[0].group(|ui| {
                                 ui.vertical_centered_justified(|ui| {
                                     ui.heading(
-                                        RichText::new("47"), /* .color(Color32::LIGHT_BLUE) */
+                                        RichText::new(self.info_crawled.to_string()), /* .color(Color32::LIGHT_BLUE) */
                                     );
                                     ui.label(RichText::new("Crawled").weak());
                                 });
@@ -550,7 +608,7 @@ impl ViewEgui {
                             cols[1].group(|ui| {
                                 ui.vertical_centered_justified(|ui| {
                                     ui.heading(
-                                        RichText::new("29"), /* .color(Color32::YELLOW) */
+                                        RichText::new(self.info_queued.to_string()), /* .color(Color32::YELLOW) */
                                     );
                                     ui.label(RichText::new("Queued").weak());
                                 });
@@ -563,9 +621,9 @@ impl ViewEgui {
                             cols[0].group(|ui| {
                                 ui.vertical_centered_justified(|ui| {
                                     ui.heading(
-                                        RichText::new("3"), /* .color(Color32::LIGHT_RED) */
+                                        RichText::new(self.info_skipped.to_string()), /* .color(Color32::LIGHT_RED) */
                                     );
-                                    ui.label(RichText::new("Errors").weak());
+                                    ui.label(RichText::new("Skipped").weak());
                                 });
                             });
                             cols[1].group(|ui| {
@@ -590,7 +648,7 @@ impl ViewEgui {
                                     egui::ScrollArea::vertical()
                                         .auto_shrink([false, false]) // Forces scroll area to fill the panel height
                                         .show(ui, |ui| {
-                                            for entry in self.activity_tab_data.iter() {
+                                            for entry in self.tab_activity_data.iter() {
                                                 let status = entry.status;
 
                                                 ui.horizontal(|ui| {
@@ -672,22 +730,11 @@ impl ViewEgui {
                                     egui::ScrollArea::vertical()
                                         .auto_shrink([false, false])
                                         .show(ui, |ui| {
-                                            // Queue data: (Depth, domain, path)
-                                            let queue_items = vec![
-                                        ("0", "wikipedia.com", "/entry-node"),
-                                        ("1", "wikipedia.com", "/first-hop-link"),
-                                        (
-                                            "2",
-                                            "wikipedia.com",
-                                            "/deep-link-that-is-very-long-to-test-truncation",
-                                        ),
-                                    ];
-
-                                            for (depth, domain, path) in queue_items {
+                                            for (count, url) in &self.tab_queued_data {
                                                 ui.horizontal(|ui| {
                                                     // Depth Badge (Blue)
                                                     ui.label(
-                                                        RichText::new(format!(" D{} ", depth))
+                                                        RichText::new(format!(" {} ", count))
                                                             .background_color(Color32::from_rgb(
                                                                 60, 60, 60,
                                                             ))
@@ -713,7 +760,9 @@ impl ViewEgui {
                                                                     ui.spacing_mut()
                                                                         .item_spacing
                                                                         .x = 0.0;
-                                                                    ui.label(domain);
+                                                                    ui.label(url.domain().expect(
+                                                                        "domain must be valid",
+                                                                    ));
                                                                     let weak_color = ui
                                                                         .visuals()
                                                                         .weak_text_color();
@@ -721,8 +770,10 @@ impl ViewEgui {
                                                                         .override_text_color =
                                                                         Some(weak_color);
                                                                     ui.add(
-                                                                        egui::Label::new(path)
-                                                                            .truncate(),
+                                                                        egui::Label::new(
+                                                                            url.path(),
+                                                                        )
+                                                                        .truncate(),
                                                                     );
                                                                 },
                                                             );
@@ -878,6 +929,9 @@ impl ViewEgui {
                     .with_zoom_and_pan_enabled(self.free_graph_movement)
                     .with_fit_to_screen_enabled(!self.free_graph_movement);
 
+                let settings_interactions = &egui_graphs::SettingsInteraction::new() //
+                    .with_node_clicking_enabled(true);
+
                 let mut view = egui_graphs::GraphView::<
                     _,
                     _,
@@ -890,7 +944,9 @@ impl ViewEgui {
                         egui_graphs::FruchtermanReingoldWithCenterGravity,
                     >,
                 >::new(&mut self.graph)
-                .with_navigations(settings_navigation);
+                .with_navigations(settings_navigation)
+                .with_interactions(settings_interactions)
+                .with_event_sink(&self.graph_event_tx);
 
                 // 1. Trick the center calculation by expanding the LEFT boundary off-screen.
                 let mut virtual_rect = ui.available_rect_before_wrap();
@@ -1069,85 +1125,149 @@ impl ViewEgui {
                                 ui.separator();
                                 ui.add_space(4.0);
 
-                                // 1. URL HEADER: High contrast, zero gap, and text wrapping
-                                egui::Frame::none()
-                                    .fill(ui.visuals().faint_bg_color) // Uses the active theme's subtle background color
-                                    .rounding(6.0) // Rounds the corners
-                                    .inner_margin(8.0) // Adds padding inside the background box
-                                    .show(ui, |ui| {
-                                        // Force the frame to stretch to the edges so the text centers nicely within the whole panel width
-                                        ui.set_min_width(ui.available_width());
+                                ui.set_min_width(ui.available_width());
 
-                                        ui.vertical_centered(|ui| {
-                                            ui.label(
-                                                egui::RichText::new("wikipedia.com")
-                                                    .strong()
-                                                    .size(12.0),
-                                            );
+                                if let Some(index) = self.graph_selected_node {
+                                    let node = self
+                                        .graph
+                                        .node(index)
+                                        .expect("graph_selected_node must always be a valid index");
+                                    match node.payload() {
+                                        NodeData::Page(metadata) => {
+                                            // url header
+                                            egui::Frame::NONE
+                                                .fill(ui.visuals().faint_bg_color)
+                                                .corner_radius(6.0)
+                                                .inner_margin(8.0)
+                                                .show(ui, |ui| {
+                                                    ui.vertical_centered(|ui| {
+                                                        ui.label(
+                                                        egui::RichText::new(
+                                                            metadata.url.domain().expect(
+                                                                "url domain must always be valid",
+                                                            ),
+                                                        )
+                                                        .strong()
+                                                        .size(12.0),
+                                                    );
 
-                                            if true {
-                                                // Mute the path so the domain stands out as the primary identifier
-                                                ui.label(
-                                                    egui::RichText::new("/post-post")
-                                                        .color(ui.visuals().weak_text_color())
-                                                        .size(10.0),
-                                                );
-                                            }
-                                        });
-                                    });
+                                                        // Mute the path so the domain stands out as the primary identifier
+                                                        ui.label(
+                                                            egui::RichText::new(
+                                                                metadata.url.path(),
+                                                            )
+                                                            .color(ui.visuals().weak_text_color())
+                                                            .size(10.0),
+                                                        );
+                                                    });
+                                                });
+                                            ui.add_space(8.0);
 
-                                ui.add_space(8.0);
+                                            egui::Grid::new("node_details_grid")
+                                                .num_columns(2)
+                                                .striped(true)
+                                                .spacing([40.0, 4.0])
+                                                .show(ui, |ui| {
+                                                    ui.label("Status");
+                                                    add_stretched_right_cell(ui, |ui| {
+                                                        ui.label(
+                                                            RichText::new(format!(
+                                                                " {} ",
+                                                                metadata.status
+                                                            ))
+                                                            .background_color(Color32::from_rgb(
+                                                                0, 100, 0,
+                                                            ))
+                                                            .color(Color32::WHITE),
+                                                        );
+                                                    });
+                                                    ui.end_row();
 
-                                egui::Grid::new("node_details_grid")
-                                    .num_columns(2)
-                                    .striped(true)
-                                    .spacing([40.0, 4.0])
-                                    .show(ui, |ui| {
-                                        ui.label("Status");
-                                        add_stretched_right_cell(ui, |ui| {
-                                            ui.label(
-                                                RichText::new(" 200 OK ")
-                                                    .background_color(Color32::from_rgb(0, 100, 0))
-                                                    .color(Color32::WHITE),
-                                            );
-                                        });
-                                        ui.end_row();
+                                                    ui.label("Links out");
+                                                    add_stretched_right_cell(ui, |ui| {
+                                                        ui.label(format!(
+                                                            "{}",
+                                                            metadata.discovered_links.len()
+                                                        ));
+                                                    });
+                                                    ui.end_row();
 
-                                        // ui.label("Depth");
-                                        // add_stretched_right_cell(ui, |ui| {
-                                        //     ui.label("2");
-                                        // });
-                                        // ui.end_row();
+                                                    // ui.label("Page size");
+                                                    // add_stretched_right_cell(ui, |ui| {
+                                                    //     ui.label("62 KB");
+                                                    // });
+                                                    // ui.end_row();
 
-                                        ui.label("Links out");
-                                        add_stretched_right_cell(ui, |ui| {
-                                            ui.label("9");
-                                        });
-                                        ui.end_row();
+                                                    let load_time_ms = metadata
+                                                        .timestamp_end
+                                                        .duration_since(metadata.timestamp_start)
+                                                        .expect("time went backwards")
+                                                        .as_millis();
+                                                    ui.label("Crawl time");
+                                                    add_stretched_right_cell(ui, |ui| {
+                                                        ui.label(format!("{}ms", load_time_ms));
+                                                    });
+                                                    ui.end_row();
+                                                });
 
-                                        ui.label("Page size");
-                                        add_stretched_right_cell(ui, |ui| {
-                                            ui.label("62 KB");
-                                        });
-                                        ui.end_row();
+                                            ui.add_space(8.0);
 
-                                        ui.label("Load time");
-                                        add_stretched_right_cell(ui, |ui| {
-                                            ui.label("280ms");
-                                        });
-                                        ui.end_row();
-                                    });
+                                            ui.horizontal(|ui| {
+                                                if ui.button("📝 Markdown").clicked() {
+                                                    self.show_markdown_window =
+                                                        !self.show_markdown_window;
+                                                }
+                                                if ui.button("🕸 Outbound").clicked() {
+                                                    self.show_outbound_window =
+                                                        !self.show_outbound_window;
+                                                }
+                                            });
+                                        }
+                                        NodeData::Leaf(url) => {
+                                            egui::Frame::NONE
+                                                .fill(ui.visuals().faint_bg_color)
+                                                .corner_radius(6.0)
+                                                .inner_margin(8.0)
+                                                .show(ui, |ui| {
+                                                    ui.vertical_centered(|ui| {
+                                                        ui.label(
+                                                        egui::RichText::new(url.domain().expect(
+                                                            "url domain must always be valid",
+                                                        ))
+                                                        .strong()
+                                                        .size(12.0),
+                                                    );
 
-                                ui.add_space(8.0);
-
-                                ui.horizontal(|ui| {
-                                    if ui.button("📝 Markdown").clicked() {
-                                        self.show_markdown_window = !self.show_markdown_window;
+                                                        ui.label(
+                                                            egui::RichText::new(url.path())
+                                                                .color(
+                                                                    ui.visuals().weak_text_color(),
+                                                                )
+                                                                .size(10.0),
+                                                        );
+                                                    });
+                                                });
+                                            ui.vertical_centered(|ui| {
+                                                ui.add_space(8.0);
+                                                ui.label("Page not crawled");
+                                                ui.separator();
+                                                ui.add_space(8.0);
+                                                if ui.button("Crawl Page").clicked() {
+                                                    let request = CrawlRequest {
+                                                        source: url.clone(),
+                                                        depth: self.crawl_input_depth,
+                                                    };
+                                                    let command = CrawlCommand::Request(request);
+                                                    let _ = self
+                                                        .app_tx
+                                                        .send(AppRequest::Crawler(command));
+                                                }
+                                            });
+                                        }
                                     }
-                                    if ui.button("🕸 Outbound").clicked() {
-                                        self.show_outbound_window = !self.show_outbound_window;
-                                    }
-                                });
+                                } else {
+                                    ui.label("No node selected");
+                                }
                             }
                         });
 
@@ -1283,6 +1403,14 @@ impl ViewEgui {
                                         ui.add_space(8.0);
                                     }
 
+                                    ui.horizontal(|ui| {
+                                        ui.checkbox(&mut self.graph_state.is_running, "Animated");
+                                        ui.checkbox(
+                                            &mut self.graph_state.show_advanced,
+                                            "Advanced",
+                                        );
+                                    });
+
                                     // overwrite widget values
                                     state.base.is_running = self.graph_state.is_running;
                                     state.base.dt = self.graph_state.delta;
@@ -1298,11 +1426,6 @@ impl ViewEgui {
                                     egui_graphs::set_layout_state::<
                                         FruchtermanReingoldWithCenterGravityState,
                                     >(ui, state, None);
-
-                                    ui.horizontal(|ui| {
-                                        ui.checkbox(&mut self.graph_state.is_running, "Animated");
-                                        ui.checkbox(&mut self.graph_state.show_advanced, "Advanced");
-                                    });
                                 } else {
                                     ui.checkbox(&mut self.graph_state.is_running, "Animated");
                                 }
@@ -1333,45 +1456,86 @@ impl ViewEgui {
                                 );
                             });
 
-                            if self.hubs_expanded {
+                            if self.hubs_expanded && self.hubs_data.len() > 0 {
                                 ui.add_space(4.0);
                                 ui.separator();
                                 ui.add_space(4.0);
 
-                                let max = 12.0;
-                                let hubs = vec![
-                                    ("wikipedia.com", 12.0),
-                                    ("reddit.com", 10.0),
-                                    ("rust-lang.org", 9.0),
-                                ];
-
-                                for (path, value) in hubs.iter() {
-                                    ui.horizontal(|ui| {
-                                        ui.vertical(|ui| {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("hubs_scroll_area")
+                                    .max_height(200.0)
+                                    .show(ui, |ui| {
+                                        // NOTE: it's just this loop. the code above is the mapping
+                                        for (value, url) in self.hubs_data.iter() {
                                             ui.horizontal(|ui| {
-                                                ui.label(*path);
-                                                ui.with_layout(
-                                                    egui::Layout::right_to_left(
-                                                        egui::Align::Center,
-                                                    ),
-                                                    |ui| {
-                                                        ui.label(
-                                                            RichText::new(format!("{}", value))
-                                                                .color(Color32::GRAY),
+                                                ui.vertical(|ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.with_layout(
+                                                            egui::Layout::right_to_left(
+                                                                egui::Align::Center,
+                                                            ),
+                                                            |ui| {
+                                                                ui.label(
+                                                                    egui::RichText::new(format!(
+                                                                        "{}",
+                                                                        value
+                                                                    ))
+                                                                    .color(egui::Color32::GRAY),
+                                                                );
+                                                                //
+                                                                ui.spacing_mut().item_spacing.x =
+                                                                    0.0;
+                                                                ui.with_layout(
+                                                                    egui::Layout::left_to_right(
+                                                                        egui::Align::Center,
+                                                                    ),
+                                                                    |ui| {
+                                                                        ui.add(
+                                                                    egui::Label::new(
+                                                                        url.domain().expect(
+                                                                            "must always be valid",
+                                                                        ),
+                                                                    )
+                                                                    .truncate(),
+                                                                );
+                                                                        let weak_color = ui
+                                                                            .visuals()
+                                                                            .weak_text_color();
+                                                                        ui.visuals_mut()
+                                                                            .override_text_color =
+                                                                            Some(weak_color);
+                                                                        ui.add(
+                                                                            egui::Label::new(
+                                                                                url.path(),
+                                                                            )
+                                                                            .truncate(),
+                                                                        );
+                                                                    },
+                                                                );
+                                                            },
                                                         );
-                                                    },
-                                                );
+                                                    });
+
+                                                    let progress = (*value as f32
+                                                        / self
+                                                            .hubs_data
+                                                            .first()
+                                                            .expect("Lenght check already done")
+                                                            .0
+                                                            as f32)
+                                                        .clamp(0.0, 1.0);
+                                                    ui.add(
+                                                        egui::ProgressBar::new(progress)
+                                                            .desired_height(3.0)
+                                                            .fill(egui::Color32::from_rgb(
+                                                                40, 100, 180,
+                                                            )),
+                                                    );
+                                                });
                                             });
-                                            let progress = value / max;
-                                            ui.add(
-                                                egui::ProgressBar::new(progress)
-                                                    .desired_height(3.0)
-                                                    .fill(Color32::from_rgb(40, 100, 180)),
-                                            );
-                                        });
+                                            ui.add_space(4.0);
+                                        }
                                     });
-                                    ui.add_space(4.0);
-                                }
                             }
                         });
 
@@ -1429,7 +1593,8 @@ impl ViewEgui {
 
 impl eframe::App for ViewEgui {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.poll_events();
+        self.poll_channel_events();
+        self.poll_graph_events();
         self.render_ui(ui);
     }
 }

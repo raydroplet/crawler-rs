@@ -8,8 +8,10 @@ addr = "0.15.6"
 crossbeam-channel = "0.5.15"
 eframe = "0.34.1"
 egui = "0.34.1"
-egui_graphs = "0.30.0"
+egui_graphs = { version = "0.30.0", features = ["events"] }
+fdg-sim = "0.9.1"
 flume = "0.12.0"
+glam = "0.33.0"
 petgraph = "0.8.3"
 rand = { version = "0.10.1", features = ["thread_rng"] }
 rayon = "1.12.0"

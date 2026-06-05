@@ -1,7 +1,7 @@
-pub use crate::crawler::{CrawlCommand, CrawlRequest, CrawlError, PageMetadata};
+pub use crate::crawler::{CrawlCommand, CrawlError, CrawlRequest, PageMetadata};
 use crate::crawler::{CrawlResponse, Url, WebCrawler};
 use crate::gui::ViewEgui;
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use std::error::Error;
 use std::thread;
 
@@ -101,10 +101,18 @@ impl App {
                             CrawlResponse::Skipped(url) => {
                                 println!("skipped page: {}", url);
                                 //
+                                let event = CrawlEvent::Skipped(url);
+                                if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
+                                    return true;
+                                };
                             }
                             CrawlResponse::Queued(url, count) => {
                                 println!("queued page: {} ({})", url, count);
                                 //
+                                let event = CrawlEvent::Queued(url, count);
+                                if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
+                                    return true;
+                                };
                             }
                             CrawlResponse::Error(url, err) => {
                                 println!("error: {} -> {}", url, err);
