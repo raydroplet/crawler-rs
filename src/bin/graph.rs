@@ -5,7 +5,7 @@ use egui_graphs::{
     LayoutForceDirected, DisplayEdge, EdgeProps, Node, DisplayNode, DrawContext, DefaultNodeShape
 };
 use petgraph::stable_graph::{NodeIndex, StableGraph, IndexType};
-use petgraph::{EdgeType, Directed};
+use petgraph::{EdgeType, Undirected};
 
 type _L = LayoutForceDirected<FruchtermanReingoldWithCenterGravity>;
 type _S = FruchtermanReingoldWithCenterGravityState;
@@ -61,7 +61,8 @@ fn shapes(
         false
     }
 }
-type FixedWidthGraph = egui_graphs::Graph<(), (), Directed, u32, DefaultNodeShape, FixedWidthEdgeShape>;
+
+type FixedWidthGraph = egui_graphs::Graph<(), (), Undirected, u32, DefaultNodeShape, FixedWidthEdgeShape>;
 
 ///
 ////////////////////
@@ -91,7 +92,7 @@ struct BenchmarkApp {
 impl BenchmarkApp {
     fn new(_cc: &CreationContext<'_>) -> Self {
         // let mut egui_graph = Graph::new(StableGraph::new());
-        let mut egui_graph = FixedWidthGraph::new(StableGraph::new());
+        let mut egui_graph = FixedWidthGraph::new(StableGraph::default());
         let mut nodes = Vec::new();
         let mut edges_count = 0;
 

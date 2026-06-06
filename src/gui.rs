@@ -5,16 +5,16 @@ use crate::app::{
 // use crossbeam_channel as crossbeam;
 use crossbeam_channel as crossbeam;
 use eframe;
-use egui::{Color32, Pos2, RichText};
-use egui_graphs::FruchtermanReingoldWithCenterGravityState;
+use egui::{Color32, Pos2, RichText, Shape, Stroke};
+use egui_graphs::{FruchtermanReingoldWithCenterGravityState, DefaultNodeShape, DefaultEdgeShape, DisplayEdge, EdgeProps, DisplayNode, DrawContext, Node};
 use egui_graphs::events::Event;
 use petgraph::{
-    /* Directed, */ Undirected,
-    stable_graph::{DefaultIx, NodeIndex, StableGraph},
+    /* Directed, */ Undirected, EdgeType,
+    stable_graph::{DefaultIx, NodeIndex, StableGraph, IndexType},
 };
 use rand::RngExt;
 use reqwest::{StatusCode, Url};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::f32::consts::TAU;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -60,7 +60,60 @@ struct GraphState {
     center_strenght: f32,
 }
 
-type CustomGraph = egui_graphs::Graph<NodeData, (), Undirected>;
+////////////////////
+/// custom drawing
+
+// 1. Define a stateless unit struct
+#[derive(Clone)]
+pub struct FixedWidthEdgeShape;
+
+// 2. Implement From<EdgeProps<E>> (Only E is generic here in 0.30.0)
+impl<E: Clone> From<EdgeProps<E>> for FixedWidthEdgeShape {
+    fn from(_props: EdgeProps<E>) -> Self {
+        Self // No internal state needed
+    }
+}
+
+// 3. Implement the DisplayEdge trait
+impl<N: Clone, E: Clone, Ty: EdgeType, Ix: IndexType, Dn: DisplayNode<N, E, Ty, Ix>>
+    DisplayEdge<N, E, Ty, Ix, Dn> for FixedWidthEdgeShape
+{
+fn shapes(
+        &mut self,
+        start: &Node<N, E, Ty, Ix, Dn>,
+        end: &Node<N, E, Ty, Ix, Dn>,
+        ctx: &DrawContext<'_>,
+    ) -> Vec<Shape> {
+        // 1. Transform world (canvas) coordinates into UI screen coordinates
+        let start_pos = ctx.meta.canvas_to_screen_pos(start.location());
+        let end_pos = ctx.meta.canvas_to_screen_pos(end.location());
+
+        // 2. Since we are in pure screen space, a width of 2.0 is naturally
+        // fixed to 2 physical pixels on the monitor, ignoring zoom.
+        let stroke = Stroke::new(1.0, Color32::GRAY);
+
+        vec![Shape::line_segment(
+            [start_pos, end_pos],
+            stroke,
+        )]
+    }
+
+    fn update(&mut self, _state: &EdgeProps<E>) {
+        // Nothing to update since we don't store state
+    }
+
+    fn is_inside(
+        &self,
+        _start: &Node<N, E, Ty, Ix, Dn>,
+        _end: &Node<N, E, Ty, Ix, Dn>,
+        _pos: Pos2,
+    ) -> bool {
+        false
+    }
+}
+////////////////////
+
+type CustomGraph = egui_graphs::Graph<NodeData, (), Undirected, DefaultIx, DefaultNodeShape, FixedWidthEdgeShape>;
 pub struct ViewEgui {
     //
     graph_state: GraphState,
@@ -216,8 +269,8 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
         )
     }
 
-    fn distribute_nodes_circle_generic<Ty: petgraph::EdgeType>(
-        g: &mut egui_graphs::Graph<NodeData, (), Ty, petgraph::stable_graph::DefaultIx>,
+    fn distribute_nodes_circle_generic(
+        g: &mut CustomGraph,
     ) {
         let n_usize = core::cmp::max(g.node_count(), 1);
         if n_usize == 0 {
@@ -251,14 +304,12 @@ impl ViewEgui {
         g
     }
 
-    fn generate_basic_graph() -> egui_graphs::Graph<NodeData, (), Undirected, DefaultIx> {
-        let petgraph: StableGraph<(), (), Undirected, DefaultIx> =
-            Self::generate_random_petgraph(100, 300);
+    fn generate_basic_graph() -> CustomGraph {
+        // let petgraph: StableGraph<(), (), Undirected, DefaultIx> =
+        //     Self::generate_random_petgraph(100, 300);
 
-        let mut empty_graph: StableGraph<NodeData, (), Undirected, DefaultIx> =
-            StableGraph::default();
-        let graph: egui_graphs::Graph<NodeData, (), Undirected, DefaultIx> =
-            egui_graphs::Graph::from(&empty_graph);
+        let empty_graph = StableGraph::default();
+        let graph: CustomGraph = CustomGraph::new(empty_graph);
         graph
     }
 
