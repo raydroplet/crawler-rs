@@ -60,13 +60,14 @@ struct GraphState {
     center_strenght: f32,
 }
 
+type CustomGraph = egui_graphs::Graph<NodeData, (), Undirected>;
 pub struct ViewEgui {
     //
     graph_state: GraphState,
     graph_lookup: HashMap<Url, NodeIndex>,
     graph_event_tx: crossbeam::Sender<Event>,
     graph_event_rx: crossbeam::Receiver<Event>,
-    graph: egui_graphs::Graph<NodeData, (), Undirected>,
+    graph: CustomGraph,
     graph_selected_node: Option<NodeIndex>,
     //
     show_markdown_window: bool,
@@ -82,6 +83,7 @@ pub struct ViewEgui {
     hubs_expanded: bool,
     broken_expanded: bool,
     graph_expanded: bool,
+    first_crawl: bool,
     //
     show_crawl_window: bool,
     crawl_input_url: String,
@@ -147,7 +149,7 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             delta: 0.100,   // delta: 0.050,
             damping: 0.01,  // damping: 0.30,
             max_step: 3.0,  // max_step: 10.0,
-            epsilon: 0.015, // epsilon: 0.0010,
+            epsilon: 0.0100000, // epsilon: 0.0010,
             //
             k_scale: 3.0, // k_scale: 1.0,
             c_attract: 1.0,
@@ -173,13 +175,14 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             markdown_url: None,
             left_tab: LeftTab::Activity,
             free_graph_movement: false,
-            node_details_expanded: true,
-            hubs_expanded: true,
-            broken_expanded: true,
-            graph_expanded: true,
+            node_details_expanded: false,
+            hubs_expanded: false,
+            broken_expanded: false,
+            graph_expanded: false,
+            first_crawl: false,
             //
             show_crawl_window: true,
-            crawl_input_url: String::from("https://raydroplet.dev/log/"),
+            crawl_input_url: String::from("https://raydroplet.dev/"),
             crawl_input_depth: 0,
             //
             app_rx: app_response_rx,
@@ -644,6 +647,13 @@ impl ViewEgui {
                             let _ = self.app_tx.send(AppRequest::Crawler(command));
 
                             close_window = true;
+                            if !self.first_crawl {
+                                self.node_details_expanded = true;
+                                self.hubs_expanded = true;
+                                self.broken_expanded = true;
+                                self.graph_expanded = true;
+                                self.first_crawl = true;
+                            }
                         }
 
                         ui.add_enabled_ui(false, |ui| {
@@ -1417,7 +1427,7 @@ impl ViewEgui {
                                                         1e-5..=1e-1,
                                                     )
                                                     .logarithmic(true)
-                                                    .step_by(0.001),
+                                                    .max_decimals(3)
                                                 );
                                                 ui.end_row();
 

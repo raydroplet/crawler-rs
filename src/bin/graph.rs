@@ -1,161 +1,140 @@
-use crossbeam_channel::{Receiver, Sender, unbounded};
 use eframe::{App, CreationContext, NativeOptions, run_native};
-use egui::Pos2;
+use egui::{Pos2, Color32, Shape, Stroke};
 use egui_graphs::{
     FruchtermanReingoldWithCenterGravity, FruchtermanReingoldWithCenterGravityState, Graph,
-    GraphView, LayoutForceDirected,
+    LayoutForceDirected, DisplayEdge, EdgeProps, Node, DisplayNode, DrawContext, DefaultNodeShape
 };
-use fdg_sim::{ForceGraph, ForceGraphHelper, Simulation, SimulationParameters};
-use petgraph::stable_graph::NodeIndex as StableNodeIndex;
-use std::thread;
-use std::time::Duration;
+use petgraph::stable_graph::{NodeIndex, StableGraph, IndexType};
+use petgraph::{EdgeType, Directed};
 
-type L = LayoutForceDirected<FruchtermanReingoldWithCenterGravity>;
-type S = FruchtermanReingoldWithCenterGravityState;
+type _L = LayoutForceDirected<FruchtermanReingoldWithCenterGravity>;
+type _S = FruchtermanReingoldWithCenterGravityState;
 
-enum AppCommand {
-    SetRunning(bool),
-    Expand(usize),
+////////////////////
+/// custom drawing
+
+// 1. Define a stateless unit struct
+#[derive(Clone)]
+pub struct FixedWidthEdgeShape;
+
+// 2. Implement From<EdgeProps<E>> (Only E is generic here in 0.30.0)
+impl<E: Clone> From<EdgeProps<E>> for FixedWidthEdgeShape {
+    fn from(_props: EdgeProps<E>) -> Self {
+        Self // No internal state needed
+    }
+}
+
+// 3. Implement the DisplayEdge trait
+impl<N: Clone, E: Clone, Ty: EdgeType, Ix: IndexType, Dn: DisplayNode<N, E, Ty, Ix>>
+    DisplayEdge<N, E, Ty, Ix, Dn> for FixedWidthEdgeShape
+{
+fn shapes(
+        &mut self,
+        start: &Node<N, E, Ty, Ix, Dn>,
+        end: &Node<N, E, Ty, Ix, Dn>,
+        ctx: &DrawContext<'_>,
+    ) -> Vec<Shape> {
+        // 1. Transform world (canvas) coordinates into UI screen coordinates
+        let start_pos = ctx.meta.canvas_to_screen_pos(start.location());
+        let end_pos = ctx.meta.canvas_to_screen_pos(end.location());
+
+        // 2. Since we are in pure screen space, a width of 2.0 is naturally
+        // fixed to 2 physical pixels on the monitor, ignoring zoom.
+        let stroke = Stroke::new(1.0, Color32::GRAY);
+
+        vec![Shape::line_segment(
+            [start_pos, end_pos],
+            stroke,
+        )]
+    }
+
+    fn update(&mut self, _state: &EdgeProps<E>) {
+        // Nothing to update since we don't store state
+    }
+
+    fn is_inside(
+        &self,
+        _start: &Node<N, E, Ty, Ix, Dn>,
+        _end: &Node<N, E, Ty, Ix, Dn>,
+        _pos: Pos2,
+    ) -> bool {
+        false
+    }
+}
+type FixedWidthGraph = egui_graphs::Graph<(), (), Directed, u32, DefaultNodeShape, FixedWidthEdgeShape>;
+
+///
+////////////////////
+struct GraphState {
+    is_running: bool,
+    _show_advanced: bool,
+    delta: f32,
+    damping: f32,
+    max_step: f32,
+    epsilon: f32,
+    k_scale: f32,
+    c_attract: f32,
+    c_repulse: f32,
+    has_center_gravity: bool,
+    center_strength: f32,
 }
 
 struct BenchmarkApp {
-    egui_graph: Graph<(), ()>,
-    nodes: Vec<StableNodeIndex>,
+    egui_graph: FixedWidthGraph, // Replaced Graph<(), ()>
+    nodes: Vec<NodeIndex>,
     edges_count: usize,
     nodes_per_tick: usize,
-    is_running: bool,
+    graph_state: GraphState,
     free_graph_movement: bool,
-
-    // Thread communication channels
-    tx_cmd: Sender<AppCommand>,
-    rx_pos: Receiver<Vec<Pos2>>,
 }
 
 impl BenchmarkApp {
-    fn new(cc: &CreationContext<'_>) -> Self {
-        let (tx_cmd, rx_cmd) = unbounded::<AppCommand>();
-        let (tx_pos, rx_pos) = unbounded::<Vec<Pos2>>();
-        let ctx_clone = cc.egui_ctx.clone();
-
-        let mut egui_graph = Graph::new(petgraph::stable_graph::StableGraph::new());
+    fn new(_cc: &CreationContext<'_>) -> Self {
+        // let mut egui_graph = Graph::new(StableGraph::new());
+        let mut egui_graph = FixedWidthGraph::new(StableGraph::new());
         let mut nodes = Vec::new();
         let mut edges_count = 0;
 
-        // 1. Initialize UI Graph Topology
-        for i in 0..25 {
-            let egui_idx = egui_graph.add_node(());
+        for i in 0..5 {
+            let idx = egui_graph.add_node(());
+
             let angle = i as f32 * 2.4;
             let radius = 15.0 + (i as f32 * 2.0);
-            let pos_egui = Pos2::new(angle.cos() * radius, angle.sin() * radius);
+            let pos = Pos2::new(angle.cos() * radius, angle.sin() * radius);
 
-            if let Some(node) = egui_graph.node_mut(egui_idx) {
-                node.set_location(pos_egui);
+            if let Some(node) = egui_graph.node_mut(idx) {
+                node.set_location(pos);
             }
 
             if i > 0 {
-                let target_egui = nodes[i % nodes.len()];
-                egui_graph.add_edge(target_egui, egui_idx, ());
+                let target = nodes[i % nodes.len()];
+                egui_graph.add_edge(target, idx, ());
                 edges_count += 1;
             }
-            nodes.push(egui_idx);
+            nodes.push(idx);
         }
 
-        // 2. Spawn Isolated Physics Thread
-        thread::spawn(move || {
-            let mut fdg_graph: ForceGraph<(), ()> = ForceGraph::default();
-            let mut all_fdg_nodes = Vec::new();
-
-            // Mirror initial topology deterministically
-            for i in 0..25 {
-                let fdg_idx = fdg_graph.add_force_node("", ());
-                let angle = i as f32 * 2.4;
-                let radius = 15.0 + (i as f32 * 2.0);
-                fdg_graph[fdg_idx].location.x = angle.cos() * radius;
-                fdg_graph[fdg_idx].location.y = angle.sin() * radius;
-                fdg_graph[fdg_idx].location.z = 0.0;
-
-                if i > 0 {
-                    let target_fdg = all_fdg_nodes[i % all_fdg_nodes.len()];
-                    fdg_graph.add_edge(target_fdg, fdg_idx, ());
-                }
-                all_fdg_nodes.push(fdg_idx);
-            }
-
-            let mut fdg_sim = Simulation::from_graph(fdg_graph, SimulationParameters::default());
-            let mut is_running = false;
-
-            // Closure infers fdg_sim's older petgraph node type automatically
-            let mut process_cmd = |sim: &mut Simulation<(), ()>,
-                                   nodes: &mut Vec<_>,
-                                   running: &mut bool,
-                                   cmd: AppCommand| {
-                match cmd {
-                    AppCommand::SetRunning(r) => *running = r,
-                    AppCommand::Expand(count) => {
-                        let start_idx = nodes.len();
-                        for i in 0..count {
-                            let current_idx = start_idx + i;
-                            let fdg_idx = sim.get_graph_mut().add_force_node("", ());
-
-                            let angle = current_idx as f32 * 2.4;
-                            let radius = 15.0 + (current_idx as f32 * 0.5);
-                            sim.get_graph_mut()[fdg_idx].location.x = angle.cos() * radius;
-                            sim.get_graph_mut()[fdg_idx].location.y = angle.sin() * radius;
-                            sim.get_graph_mut()[fdg_idx].location.z = 0.0;
-
-                            if !nodes.is_empty() {
-                                let prng = current_idx.wrapping_mul(1103515245).wrapping_add(12345);
-                                let target_idx = prng % nodes.len();
-                                let target_fdg = nodes[target_idx];
-                                sim.get_graph_mut().add_edge(fdg_idx, target_fdg, ());
-                            }
-                            nodes.push(fdg_idx);
-                        }
-                    }
-                }
-            };
-
-            loop {
-                if is_running {
-                    while let Ok(cmd) = rx_cmd.try_recv() {
-                        process_cmd(&mut fdg_sim, &mut all_fdg_nodes, &mut is_running, cmd);
-                    }
-
-                    if is_running {
-                        fdg_sim.update(0.016);
-
-                        let positions: Vec<Pos2> = all_fdg_nodes
-                            .iter()
-                            .map(|&idx| {
-                                let loc = &fdg_sim.get_graph()[idx].location;
-                                Pos2::new(loc.x, loc.y)
-                            })
-                            .collect();
-
-                        let _ = tx_pos.send(positions);
-
-                        ctx_clone.request_repaint();
-                        thread::sleep(Duration::from_millis(16));
-                    }
-                } else {
-                    if let Ok(cmd) = rx_cmd.recv() {
-                        process_cmd(&mut fdg_sim, &mut all_fdg_nodes, &mut is_running, cmd);
-                    } else {
-                        break;
-                    }
-                }
-            }
-        });
+        let state = GraphState {
+            is_running: true,
+            _show_advanced: false,
+            delta: 0.100,
+            damping: 0.01,
+            max_step: 3.0,
+            epsilon: 0.015,
+            k_scale: 3.0,
+            c_attract: 1.0,
+            c_repulse: 1.0,
+            has_center_gravity: true,
+            center_strength: 0.30,
+        };
 
         Self {
             egui_graph,
             nodes,
             edges_count,
             nodes_per_tick: 100,
-            is_running: false,
+            graph_state: state,
             free_graph_movement: false,
-            tx_cmd,
-            rx_pos,
         }
     }
 
@@ -164,50 +143,30 @@ impl BenchmarkApp {
 
         for i in 0..self.nodes_per_tick {
             let current_idx = start_idx + i;
-            let egui_idx = self.egui_graph.add_node(());
+            let new_node = self.egui_graph.add_node(());
 
             let angle = current_idx as f32 * 2.4;
             let radius = 15.0 + (current_idx as f32 * 0.5);
-            let pos_egui = Pos2::new(angle.cos() * radius, angle.sin() * radius);
+            let pos = Pos2::new(angle.cos() * radius, angle.sin() * radius);
 
-            if let Some(node) = self.egui_graph.node_mut(egui_idx) {
-                node.set_location(pos_egui);
+            if let Some(node) = self.egui_graph.node_mut(new_node) {
+                node.set_location(pos);
             }
 
             if !self.nodes.is_empty() {
                 let prng = current_idx.wrapping_mul(1103515245).wrapping_add(12345);
                 let target_idx = prng % self.nodes.len();
-                let target_egui = self.nodes[target_idx];
 
-                self.egui_graph.add_edge(egui_idx, target_egui, ());
+                let target = self.nodes[target_idx];
+                self.egui_graph.add_edge(new_node, target, ());
                 self.edges_count += 1;
             }
-            self.nodes.push(egui_idx);
-        }
-
-        let _ = self.tx_cmd.send(AppCommand::Expand(self.nodes_per_tick));
-    }
-
-    fn sync_positions(&mut self) {
-        let mut latest_frame = None;
-
-        // Drain the channel instantly to grab only the most recent calculation
-        while let Ok(positions) = self.rx_pos.try_recv() {
-            latest_frame = Some(positions);
-        }
-
-        if let Some(pos_vec) = latest_frame {
-            // Zip safely binds the two arrays, preventing index out-of-bounds panics
-            // during the split-second delay when the UI has expanded but physics hasn't.
-            for (&egui_idx, &pos) in self.nodes.iter().zip(pos_vec.iter()) {
-                if let Some(egui_node) = self.egui_graph.node_mut(egui_idx) {
-                    egui_node.set_location(pos);
-                }
-            }
+            self.nodes.push(new_node);
         }
     }
 }
 
+// Helper function to align text to the right side of the grid cell
 fn add_stretched_right_cell(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
     ui.with_layout(
         egui::Layout::right_to_left(egui::Align::Center),
@@ -216,11 +175,11 @@ fn add_stretched_right_cell(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut eg
 }
 
 impl App for BenchmarkApp {
-    fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {}
+    fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Timer removed. Interaction is now purely driven by the UI window.
+    }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.sync_positions();
-
         // Floating Information & Control Window
         egui::Window::new("Graph Details")
             .resizable(false)
@@ -251,8 +210,7 @@ impl App for BenchmarkApp {
                         self.inject_nodes();
                     }
                     if row_ui.button("Animated").clicked() {
-                        self.is_running = !self.is_running;
-                        let _ = self.tx_cmd.send(AppCommand::SetRunning(self.is_running));
+                        self.graph_state.is_running = !self.graph_state.is_running;
                     }
                     if row_ui.button("🎯 Center").clicked() {
                         self.free_graph_movement = !self.free_graph_movement;
@@ -262,26 +220,51 @@ impl App for BenchmarkApp {
 
         // Graph Rendering
         egui::CentralPanel::default().show_inside(ui, |central_ui| {
-            let mut state = egui_graphs::get_layout_state::<S>(central_ui, None);
-            state.base.is_running = false;
+            let mut state = egui_graphs::get_layout_state::<
+                FruchtermanReingoldWithCenterGravityState,
+            >(central_ui, None);
+
+            state.base.is_running = self.graph_state.is_running;
+            state.base.dt = self.graph_state.delta;
+            state.base.damping = self.graph_state.damping;
+            state.base.max_step = self.graph_state.max_step;
+            state.base.epsilon = self.graph_state.epsilon;
+            state.base.k_scale = self.graph_state.k_scale;
+            state.base.c_attract = self.graph_state.c_attract;
+            state.base.c_repulse = self.graph_state.c_repulse;
+            state.extras.0.enabled = self.graph_state.has_center_gravity;
+            state.extras.0.params.c = self.graph_state.center_strength;
 
             let settings_navigation = &egui_graphs::SettingsNavigation::new()
                 .with_zoom_and_pan_enabled(self.free_graph_movement)
                 .with_fit_to_screen_enabled(!self.free_graph_movement);
 
-            egui_graphs::set_layout_state::<S>(central_ui, state, None);
+            egui_graphs::set_layout_state::<FruchtermanReingoldWithCenterGravityState>(
+                central_ui, state, None,
+            );
 
-            let mut view = GraphView::<_, _, _, _, _, _, S, L>::new(&mut self.egui_graph)
-                .with_navigations(settings_navigation);
+            let mut view = egui_graphs::GraphView::<
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                FruchtermanReingoldWithCenterGravityState,
+                egui_graphs::LayoutForceDirected<egui_graphs::FruchtermanReingoldWithCenterGravity>,
+            >::new(&mut self.egui_graph)
+            .with_navigations(settings_navigation);
 
             central_ui.add(&mut view);
         });
+
+        ui.ctx().request_repaint();
     }
 }
 
 fn main() -> eframe::Result<()> {
     run_native(
-        "fdg_sim Native Benchmark (Multi-threaded)",
+        "Fruchterman-Reingold Native Benchmark",
         NativeOptions::default(),
         Box::new(|cc| Ok(Box::new(BenchmarkApp::new(cc)))),
     )
