@@ -5,11 +5,9 @@ use html_to_markdown_rs::convert;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
-use std::thread;
+use tokio::sync::{mpsc};
 
-pub struct App {
-    pages: RefCell<HashMap<Url, String>>,
-}
+pub struct App {}
 
 pub enum AppRequest {
     Crawler(CrawlCommand),
@@ -30,16 +28,13 @@ pub enum AppResponse {
 
 impl App {
     pub fn new() -> Self {
-        Self {
-            pages: HashMap::new().into(),
-            //
-        }
+        Self {}
     }
 
     pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
         //// channels
-        let (crawler_response_tx, crawler_response_rx) = flume::bounded(1024);
-        let (crawler_command_tx, crawler_command_rx) = flume::bounded(8);
+        let (crawler_response_tx, crawler_response_rx) = mpsc::channel(1024);
+        let (crawler_command_tx, crawler_command_rx) = mpsc::channel(8);
         let (view_response_tx, view_response_rx) = flume::bounded(1024);
         let (view_command_tx, view_command_rx) = flume::bounded(1024);
 
@@ -52,148 +47,125 @@ impl App {
             .enable_all()
             .build()?;
 
-        thread::scope(|scope| {
-            scope.spawn(move || {
-                runtime.block_on(async {
-                    crawler.run(crawler_command_rx, crawler_response_tx).await;
-                });
-            });
-
-            scope.spawn(|| {
-                self.event_loop(
-                    view_command_rx,
-                    view_response_tx,
-                    crawler_command_tx.clone(),
-                    crawler_response_rx,
-                );
-            });
-
-            let _ = ViewEgui::run(view);
+        runtime.spawn(async move {
+            crawler.run(crawler_command_rx, crawler_response_tx).await;
         });
+
+        runtime.spawn(async move {
+            Self::async_event_loop(
+                view_command_rx,
+                view_response_tx,
+                crawler_command_tx.clone(),
+                crawler_response_rx,
+            )
+            .await;
+        });
+
+        let _ = ViewEgui::run(view);
 
         println!("exiting App::run()");
         Ok(())
     }
 
-    fn event_loop(
-        &mut self,
+    async fn async_event_loop(
         view_command_rx: flume::Receiver<AppRequest>,
         view_response_tx: flume::Sender<AppResponse>,
-        crawler_command_tx: flume::Sender<CrawlCommand>,
-        crawler_response_rx: flume::Receiver<CrawlResponse>,
+        crawler_command_tx: mpsc::Sender<CrawlCommand>,
+        mut crawler_response_rx: mpsc::Receiver<CrawlResponse>,
     ) {
+        let pages: RefCell<HashMap<Url, String>> = HashMap::new().into();
+
         loop {
-            let to_break = flume::Selector::new()
-                .recv(&crawler_response_rx, |message| {
-                    match message {
-                        Ok(response) => match response {
-                            CrawlResponse::Page(page) => {
-                                println!(
-                                    "received page: {} ({})",
-                                    page.metadata.url,
-                                    page.metadata.discovered_links.len()
-                                );
-                                // caches the page in case the gui asks for its contents
-                                self.pages
-                                    .borrow_mut()
-                                    .insert(page.metadata.url.clone(), page.content);
-                                let event = CrawlEvent::Page(page.metadata);
-                                if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
-                                    return true;
-                                };
-                            }
-                            CrawlResponse::Skipped(url) => {
-                                println!("skipped page: {}", url);
-                                //
-                                let event = CrawlEvent::Skipped(url);
-                                if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
-                                    return true;
-                                };
-                            }
-                            CrawlResponse::Queued(url, count) => {
-                                println!("queued page: {} ({})", url, count);
-                                //
-                                let event = CrawlEvent::Queued(url, count);
-                                if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
-                                    return true;
-                                };
-                            }
-                            CrawlResponse::Error(url, err) => {
-                                println!("error: {} -> {}", url, err);
-                                //
-                                let event = CrawlEvent::Error(url, err);
-                                if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
-                                    return true;
-                                };
-                            }
-                        },
-                        Err(err) => {
-                            println!("channel closed?: {}", err);
-                            return true;
-                        }
-                    }
+            tokio::select! {
+                view_cmd_opt = view_command_rx.recv_async() => {
+                    let Ok(command) = view_cmd_opt else { break; };
+                    match command {
+                        AppRequest::Crawler(command) => {
+                            if crawler_command_tx.send(command.clone()).await.is_err() {
+                               break;
+                            };
 
-                    false
-                })
-                .recv(&view_command_rx, |message| {
-                    match message {
-                        Ok(command) => {
-                            match command {
-                                AppRequest::Crawler(command) => {
-                                    if crawler_command_tx.send(command.clone()).is_err() {
-                                        return true;
-                                    };
-
-                                    // debug info
-                                    if true {
-                                        match command {
-                                            CrawlCommand::Request(request) => {
-                                                println!(
-                                                    "view_command request: {} ({})",
-                                                    request.source, request.depth
-                                                );
-                                            }
-                                            CrawlCommand::Terminate => {
-                                                println!("view_command terminate");
-                                                return true;
-                                                // TODO: notify crawler
-                                            }
-                                        }
+                            // quick debug info
+                            if false {
+                                match command {
+                                    CrawlCommand::Request(request) => {
+                                        println!(
+                                            "view_command request: {} ({})",
+                                            request.source, request.depth
+                                        );
                                     }
-                                }
-                                AppRequest::Markdown(url) => {
-                                    if let Some(content) = self.pages.borrow_mut().get(&url) {
-                                        let markdown = match convert(&content, None) {
-                                            Ok(result) => result.content.unwrap_or_default(),
-                                            Err(err) => {
-                                                eprintln!("conversion failed: {err}");
-                                                String::from("Failed to parse html into markdown.")
-                                            }
-                                        };
-                                        if view_response_tx
-                                            .send(AppResponse::Markdown(url, markdown))
-                                            .is_err()
-                                        {
-                                            return true;
-                                        };
+                                    CrawlCommand::Terminate => {
+                                        println!("view_command terminate");
+                                        break;
+                                        // TODO: notify crawler
                                     }
                                 }
                             }
                         }
-                        Err(err) => {
-                            println!("view_command err: {}", err);
-                            return true;
+                        AppRequest::Markdown(url) => {
+                            if let Some(content) = pages.borrow_mut().get(&url) {
+                                let markdown = match convert(&content, None) {
+                                    Ok(result) => result.content.unwrap_or_default(),
+                                    Err(err) => {
+                                        eprintln!("conversion failed: {err}");
+                                        String::from("Failed to parse html into markdown.")
+                                    }
+                                };
+                                if view_response_tx
+                                    .send(AppResponse::Markdown(url, markdown))
+                                    .is_err()
+                                {
+                                    break;
+                                };
+                            }
                         }
                     }
+                }
 
-                    false
-                })
-                .wait();
-
-            if to_break {
-                let _ = crawler_command_tx.send(CrawlCommand::Terminate);
-                println!("breaking free of the App event_loop");
-                break;
+                crawler_res_opt = crawler_response_rx.recv() => {
+                    let Some(response) = crawler_res_opt else { break; };
+                    match response {
+                        CrawlResponse::Page(page) => {
+                            println!(
+                                "received page: {} ({})",
+                                page.metadata.url,
+                                page.metadata.discovered_links.len()
+                            );
+                            // caches the page in case the gui asks for its contents
+                            pages
+                                .borrow_mut()
+                                .insert(page.metadata.url.clone(), page.content);
+                            let event = CrawlEvent::Page(page.metadata);
+                            if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
+                                break;
+                            };
+                        }
+                        CrawlResponse::Skipped(url) => {
+                            println!("skipped page: {}", url);
+                            //
+                            let event = CrawlEvent::Skipped(url);
+                            if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
+                                break;
+                            };
+                        }
+                        CrawlResponse::Queued(url, count) => {
+                            println!("queued page: {} ({})", url, count);
+                            //
+                            let event = CrawlEvent::Queued(url, count);
+                            if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
+                                break;
+                            };
+                        }
+                        CrawlResponse::Error(url, err) => {
+                            println!("error: {} -> {}", url, err);
+                            //
+                            let event = CrawlEvent::Error(url, err);
+                            if view_response_tx.send(AppResponse::Crawler(event)).is_err() {
+                                break;
+                            };
+                        }
+                    }
+                }
             }
         }
     }

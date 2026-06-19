@@ -2,6 +2,7 @@
 name = "crawler-rs"
 version = "0.1.0"
 edition = "2024"
+default-run = "crawler-rs"
 
 [dependencies]
 addr = "0.15.6"

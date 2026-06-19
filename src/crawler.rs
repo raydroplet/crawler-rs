@@ -133,16 +133,16 @@ impl WebCrawler {
 
     pub async fn run(
         &self,
-        crawler_command_rx: flume::Receiver<CrawlCommand>,
-        crawler_response_tx: flume::Sender<CrawlResponse>,
+        crawler_command_rx: mpsc::Receiver<CrawlCommand>,
+        crawler_response_tx: mpsc::Sender<CrawlResponse>,
     ) {
         Self::event_loop(crawler_command_rx, crawler_response_tx, self.client.clone()).await;
     }
 
     // TODO: add a per-website request delay
     async fn event_loop(
-        command_rx: flume::Receiver<CrawlCommand>,
-        response_tx: flume::Sender<CrawlResponse>,
+        mut command_rx: mpsc::Receiver<CrawlCommand>,
+        response_tx: mpsc::Sender<CrawlResponse>,
         client: reqwest::Client,
     ) {
         let mut visited = HashSet::new();
@@ -151,8 +151,8 @@ impl WebCrawler {
 
         loop {
             tokio::select! {
-                cmd_opt = command_rx.recv_async() => {
-                    let Ok(command) = cmd_opt else {
+                cmd_opt = command_rx.recv() => {
+                    let Some(command) = cmd_opt else {
                         break; // channel closed. break the loop.
                     };
 
@@ -178,13 +178,6 @@ impl WebCrawler {
                             // depth check
                             if request.depth < 0 {
                                 continue; // invalid request
-                            }
-
-                            // tracking crawls
-                            // WARN: is there any scenario this check may not be sufficient?
-                            if !visited.insert(request.source.clone()) {
-                                let _ = event_tx.send(ManagerEvent::Skipped(request.source));
-                                continue; // we already visited this page
                             }
 
                             // TODO: we currently avoid crawling visited pages again completely.
@@ -222,7 +215,7 @@ impl WebCrawler {
                                     };
 
                                     // branch off new requests, if applicable
-                                    if  request.depth > 0  {
+                                    if request.depth > 0  {
                                         let _ = event_tx.send(ManagerEvent::Branch(request.source.clone(), request.depth, urls.clone()));
                                     }
 
@@ -240,7 +233,7 @@ impl WebCrawler {
                                     };
 
                                     // sends the payload to the listener
-                                    if response_tx.send_async(CrawlResponse::Page(message)).await.is_err() {
+                                    if response_tx.send(CrawlResponse::Page(message)).await.is_err() {
                                         let _ = event_tx.send(ManagerEvent::Terminate);
                                     }
                                 }
@@ -248,11 +241,18 @@ impl WebCrawler {
                         }
                         ManagerEvent::Branch(url, depth, links) => {
                             // notify a new crawl is being queued
-                            let url = url.clone();
                             let ammount = links.len();
-                            let _ = response_tx.send_async(CrawlResponse::Queued(url, ammount)).await;
+                            let _ = response_tx.send(CrawlResponse::Queued(url, ammount)).await;
 
                             for link in &links {
+                                // tracking crawls
+                                // WARN: is there any scenario this check may not be sufficient?
+                                // BUG: assert if moving this check here is ok
+                                if !visited.insert(link.clone()) {
+                                    let _ = event_tx.send(ManagerEvent::Skipped(link.clone()));
+                                    continue; // we already visited this page
+                                }
+
                                 let event_tx = event_tx.clone();
                                 let request = CrawlRequest {
                                     source: link.clone(),
@@ -262,12 +262,12 @@ impl WebCrawler {
                             }
                         }
                         ManagerEvent::Error(url, crawl_error) => {
-                            if response_tx.send_async(CrawlResponse::Error(url, crawl_error)).await.is_err() {
+                            if response_tx.send(CrawlResponse::Error(url, crawl_error)).await.is_err() {
                               let _ = event_tx.send(ManagerEvent::Terminate);
                             }
                         }
                         ManagerEvent::Skipped(url) => {
-                            if response_tx.send_async(CrawlResponse::Skipped(url)).await.is_err(){
+                            if response_tx.send(CrawlResponse::Skipped(url)).await.is_err(){
                                 let _ = event_tx.send(ManagerEvent::Terminate);
                             };
                         }
@@ -331,7 +331,6 @@ impl WebCrawler {
     async fn process_page_parse(
         url: Url,
         body: String,
-        // response_tx: flume::Sender<CrawlResponse>,
     ) -> Result<HashSet<Url>, ManagerEvent> {
         let task_url = url.clone();
         let result = tokio::task::spawn_blocking(move || {

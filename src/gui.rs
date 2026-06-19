@@ -6,11 +6,14 @@ use crate::app::{
 use crossbeam_channel as crossbeam;
 use eframe;
 use egui::{Color32, Pos2, RichText, Shape, Stroke};
-use egui_graphs::{FruchtermanReingoldWithCenterGravityState, DefaultNodeShape, DefaultEdgeShape, DisplayEdge, EdgeProps, DisplayNode, DrawContext, Node};
 use egui_graphs::events::Event;
+use egui_graphs::{
+    DefaultNodeShape, DisplayEdge, DisplayNode, DrawContext, EdgeProps,
+    FruchtermanReingoldWithCenterGravityState, Node,
+};
 use petgraph::{
-    /* Directed, */ Undirected, EdgeType,
-    stable_graph::{DefaultIx, NodeIndex, StableGraph, IndexType},
+    EdgeType, /* Directed, */ Undirected,
+    stable_graph::{DefaultIx, IndexType, NodeIndex, StableGraph},
 };
 use rand::RngExt;
 use reqwest::{StatusCode, Url};
@@ -78,7 +81,7 @@ impl<E: Clone> From<EdgeProps<E>> for FixedWidthEdgeShape {
 impl<N: Clone, E: Clone, Ty: EdgeType, Ix: IndexType, Dn: DisplayNode<N, E, Ty, Ix>>
     DisplayEdge<N, E, Ty, Ix, Dn> for FixedWidthEdgeShape
 {
-fn shapes(
+    fn shapes(
         &mut self,
         start: &Node<N, E, Ty, Ix, Dn>,
         end: &Node<N, E, Ty, Ix, Dn>,
@@ -90,12 +93,9 @@ fn shapes(
 
         // 2. Since we are in pure screen space, a width of 2.0 is naturally
         // fixed to 2 physical pixels on the monitor, ignoring zoom.
-        let stroke = Stroke::new(1.0, Color32::GRAY);
+        let stroke = Stroke::new(0.5, Color32::GRAY);
 
-        vec![Shape::line_segment(
-            [start_pos, end_pos],
-            stroke,
-        )]
+        vec![Shape::line_segment([start_pos, end_pos], stroke)]
     }
 
     fn update(&mut self, _state: &EdgeProps<E>) {
@@ -113,7 +113,8 @@ fn shapes(
 }
 ////////////////////
 
-type CustomGraph = egui_graphs::Graph<NodeData, (), Undirected, DefaultIx, DefaultNodeShape, FixedWidthEdgeShape>;
+type CustomGraph =
+    egui_graphs::Graph<NodeData, (), Undirected, DefaultIx, DefaultNodeShape, FixedWidthEdgeShape>;
 pub struct ViewEgui {
     //
     graph_state: GraphState,
@@ -184,7 +185,7 @@ impl ViewEgui {
         app_response_rx: flume::Receiver<AppResponse>,
         app_request_tx: flume::Sender<AppRequest>,
     ) -> Self {
-        let mut graph = Self::generate_basic_graph();
+        let mut graph = CustomGraph::new(StableGraph::default());
         Self::distribute_nodes_circle_generic(&mut graph);
 
         let text = "# Regnata removete motis patris
@@ -199,9 +200,9 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             is_running: true,
             show_advanced: false,
             //
-            delta: 0.100,   // delta: 0.050,
-            damping: 0.01,  // damping: 0.30,
-            max_step: 3.0,  // max_step: 10.0,
+            delta: 0.100,       // delta: 0.050,
+            damping: 0.01,      // damping: 0.30,
+            max_step: 3.0,      // max_step: 10.0,
             epsilon: 0.0100000, // epsilon: 0.0010,
             //
             k_scale: 3.0, // k_scale: 1.0,
@@ -269,9 +270,7 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
         )
     }
 
-    fn distribute_nodes_circle_generic(
-        g: &mut CustomGraph,
-    ) {
+    fn distribute_nodes_circle_generic(g: &mut CustomGraph) {
         let n_usize = core::cmp::max(g.node_count(), 1);
         if n_usize == 0 {
             return;
@@ -289,30 +288,6 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
 }
 
 impl ViewEgui {
-    #[allow(dead_code)]
-    fn generate_basic_petgraph() -> StableGraph<(), (), Undirected, DefaultIx> {
-        let mut g: StableGraph<(), (), Undirected> = StableGraph::default();
-
-        let a = g.add_node(());
-        let b = g.add_node(());
-        let c = g.add_node(());
-
-        g.add_edge(a, b, ());
-        g.add_edge(b, c, ());
-        g.add_edge(c, a, ());
-
-        g
-    }
-
-    fn generate_basic_graph() -> CustomGraph {
-        // let petgraph: StableGraph<(), (), Undirected, DefaultIx> =
-        //     Self::generate_random_petgraph(100, 300);
-
-        let empty_graph = StableGraph::default();
-        let graph: CustomGraph = CustomGraph::new(empty_graph);
-        graph
-    }
-
     pub fn generate_random_petgraph(
         num_nodes: usize,
         num_edges: usize,
@@ -549,23 +524,26 @@ impl ViewEgui {
         }
     }
 
-    fn update_markdown_window(&self) {
+    fn update_markdown_window(&mut self) {
         if !self.show_markdown_window {
             return;
         }
 
         // get the current node url
-        let url_opt = self
-            .graph_selected_node
-            .and_then(|index| self.graph.node(index))
-            .map(|node| match node.payload() {
-                NodeData::Page(metadata) => metadata.url.clone(),
-                NodeData::Leaf(url) => url.clone(),
-            });
+        let url_opt = self.get_selected_node_payload().map(|data| match data {
+            NodeData::Page(metadata) => metadata.url.clone(),
+            NodeData::Leaf(url) => url.clone(),
+        });
         if let Some(url) = url_opt {
             println!("markdown request sent for {}", url.clone());
             let _ = self.app_tx.send(AppRequest::Markdown(url));
         }
+    }
+
+    fn get_selected_node_payload(&self) -> Option<&NodeData> {
+        self.graph_selected_node
+            .and_then(|index| self.graph.node(index))
+            .map(|node| node.payload())
     }
 
     fn poll_graph_events(&mut self) {
@@ -582,414 +560,83 @@ impl ViewEgui {
         }
     }
 
-    fn render_ui(&mut self, ui: &mut egui::Ui) {
-        let menu_frame = egui::Frame::default()
-            .fill(ui.visuals().extreme_bg_color)
-            .inner_margin(egui::Margin::symmetric(8, 4));
-
-        let graph_frame = egui::Frame::default()
-            .fill(ui.visuals().extreme_bg_color)
-            .inner_margin(egui::Margin::symmetric(0, 0));
-
-        // 2. Global Top Menu
-        if true {
-            // TODO: assert if this is centered correctly
-            egui::Panel::top("top_menu_bar")
-                .frame(menu_frame)
-                .show_inside(ui, |ui| {
-                    // 1. Get the total width available in the panel
-                    let available_width = ui.available_width();
-
-                    // 2. Estimate the width of your menu items.
-                    // You may need to tweak this number based on your font size and labels.
-                    // "File" + "View" + "Graph" ≈ 150px
-                    let estimated_menu_width = 200.0;
-
-                    // 3. Calculate the padding needed on the left to center it
-                    let left_padding = (available_width - estimated_menu_width) / 2.0;
-
-                    ui.horizontal(|ui| {
-                        // 4. Push the menu bar to the right by adding empty space
-                        if left_padding > 0.0 {
-                            ui.add_space(left_padding);
-                        }
-
-                        // 5. Draw the menu bar
-                        egui::MenuBar::new().ui(ui, |ui| {
-                            ui.menu_button("File", |ui| {
-                                if ui.button("❌ Exit").clicked() {
-                                    ui.send_viewport_cmd(egui::ViewportCommand::Close);
-                                }
-                            });
-
-                            ui.menu_button("View", |ui| {
-                                if ui.button("🔍 Toggle Panels").clicked() {
-                                    self.node_details_expanded = !self.node_details_expanded;
-                                    self.graph_expanded = !self.graph_expanded;
-                                    self.hubs_expanded = !self.hubs_expanded;
-                                    self.broken_expanded = !self.broken_expanded;
-                                }
-                            });
-
-                            ui.menu_button("Graph", |ui| {
-                                if ui.button("Center").clicked() {
-                                    self.free_graph_movement = !self.free_graph_movement;
-                                    println!("Center");
-                                }
-                                if ui.button("Reorganize").clicked() {
-                                    Self::distribute_nodes_circle_generic(&mut self.graph);
-                                    println!("Reorganize");
-                                }
-                            });
-                            if ui.button("Crawl").clicked() {
-                                self.show_crawl_window = !self.show_crawl_window;
-                                if self.show_crawl_window {
-                                    self.show_about_window = false;
-                                }
-                            };
-                            if ui.button("About").clicked() {
-                                self.show_about_window = !self.show_about_window;
-                                if self.show_about_window {
-                                    self.show_crawl_window = false; // out of the way!
-                                }
-                            };
-                        });
-                    });
-                });
-        }
-
-        let panel_frame = egui::Frame::window(&ui.style());
-        let mut close_window = false;
-
-        if self.show_crawl_window {
-            egui::Window::new("Start Crawl")
-                .open(&mut self.show_crawl_window) // Borrows the variable here
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ui.ctx(), |ui| {
-                    egui::Grid::new("crawl_input_grid")
-                        .num_columns(2)
-                        .spacing([10.0, 10.0])
-                        .show(ui, |ui| {
-                            ui.label("URL:");
-                            ui.text_edit_singleline(&mut self.crawl_input_url);
-                            ui.end_row();
-
-                            ui.label("Depth:");
-                            ui.add(egui::DragValue::new(&mut self.crawl_input_depth).range(0..=1));
-                            ui.end_row();
-                        });
-
-                    ui.add_space(12.0);
-
-                    ui.horizontal(|ui| {
-                        if ui.button("▶ Start Session").clicked() {
-                            let Ok(url) = Url::parse(&self.crawl_input_url) else {
-                                println!("failed to parse"); // TODO: provide a better warning
-                                return;
-                            };
-
-                            let request = CrawlRequest {
-                                source: url,
-                                depth: self.crawl_input_depth,
-                            };
-                            let command = CrawlCommand::Request(request);
-                            let _ = self.app_tx.send(AppRequest::Crawler(command));
-
-                            close_window = true;
-                            if !self.first_crawl {
-                                self.node_details_expanded = true;
-                                self.hubs_expanded = true;
-                                self.broken_expanded = true;
-                                self.graph_expanded = true;
-                                self.first_crawl = true;
-                            }
-                        }
-
-                        ui.add_enabled_ui(false, |ui| {
-                            if ui.button("⏹ Terminate").clicked() {
-                                let command = CrawlCommand::Terminate;
-                                let _ = self.app_tx.send(AppRequest::Crawler(command));
-
-                                // close_window = true;
-                            };
-                        });
-                    });
-                });
-        }
-
-        let mut is_open = self.show_about_window;
-        egui::Window::new("About")
-            .open(&mut is_open)
-            .collapsible(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .resizable(false)
-            .show(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.heading("Crawler-rs");
-                    ui.label(RichText::new("version 0.1.0").weak());
-                });
-                ui.separator();
-                ui.label("This application does awesome things.");
-                ui.horizontal(|ui| {
-                    ui.label("Source code:");
-                    ui.hyperlink_to("GitHub", "https://github.com/raydroplet/crawler-rs");
-                });
-            });
-        // Sync the state back (this handles the user clicking the 'X' button)
-        self.show_about_window = is_open;
-
-        // 3. Safely update the struct field now that the borrow is gone
-        if close_window {
-            self.show_crawl_window = false;
-        }
-
-        // 3. Left Panel
-        egui::Panel::left("left_crawling_input")
-            .frame(panel_frame.clone())
-            .resizable(true)
-            .default_size(220.0)
+    fn render_top_menu(&mut self, ui: &mut egui::Ui, menu_frame: egui::Frame) {
+        // TODO: assert if this is centered correctly
+        egui::Panel::top("top_menu_bar")
+            .frame(menu_frame)
             .show_inside(ui, |ui| {
+                // 1. Get the total width available in the panel
+                let available_width = ui.available_width();
+
+                // 2. Estimate the width of your menu items.
+                // You may need to tweak this number based on your font size and labels.
+                // "File" + "View" + "Graph" ≈ 150px
+                let estimated_menu_width = 200.0;
+
+                // 3. Calculate the padding needed on the left to center it
+                let left_padding = (available_width - estimated_menu_width) / 2.0;
+
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.left_tab, LeftTab::Activity, "📈 Activity");
-                    ui.selectable_value(&mut self.left_tab, LeftTab::Queue, "⏳ Queued");
-                    ui.selectable_value(&mut self.left_tab, LeftTab::Errors, "❌ Errors");
+                    // 4. Push the menu bar to the right by adding empty space
+                    if left_padding > 0.0 {
+                        ui.add_space(left_padding);
+                    }
+
+                    // 5. Draw the menu bar
+                    egui::MenuBar::new().ui(ui, |ui| {
+                        ui.menu_button("File", |ui| {
+                            if ui.button("❌ Exit").clicked() {
+                                ui.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        });
+
+                        ui.menu_button("View", |ui| {
+                            if ui.button("🔍 Toggle Panels").clicked() {
+                                self.node_details_expanded = !self.node_details_expanded;
+                                self.graph_expanded = !self.graph_expanded;
+                                self.hubs_expanded = !self.hubs_expanded;
+                                self.broken_expanded = !self.broken_expanded;
+                            }
+                        });
+
+                        ui.menu_button("Graph", |ui| {
+                            let message = if self.free_graph_movement {
+                                "Lock"
+                            } else {
+                                "Unlock"
+                            };
+                            if ui.button(message).clicked() {
+                                self.free_graph_movement = !self.free_graph_movement;
+                                println!("Center {}", message);
+                            }
+                            if ui.button("Reorganize").clicked() {
+                                Self::distribute_nodes_circle_generic(&mut self.graph);
+                                println!("Reorganize");
+                            }
+                        });
+                        if ui.button("Crawl").clicked() {
+                            self.show_crawl_window = !self.show_crawl_window;
+                            if self.show_crawl_window {
+                                self.show_about_window = false;
+                            }
+                        };
+                        if ui.button("About").clicked() {
+                            self.show_about_window = !self.show_about_window;
+                            if self.show_about_window {
+                                self.show_crawl_window = false; // out of the way!
+                            }
+                        };
+                    });
                 });
-
-                ui.separator();
-
-                egui::Panel::bottom("left_metrics_footer")
-                    .frame(egui::Frame::NONE)
-                    .show_inside(ui, |ui| {
-                        ui.add_space(8.0);
-
-                        ui.columns(2, |cols| {
-                            cols[0].group(|ui| {
-                                ui.vertical_centered_justified(|ui| {
-                                    ui.heading(
-                                        RichText::new(self.info_crawled.to_string()), /* .color(Color32::LIGHT_BLUE) */
-                                    );
-                                    ui.label(RichText::new("Crawled").weak());
-                                });
-                            });
-                            cols[1].group(|ui| {
-                                ui.vertical_centered_justified(|ui| {
-                                    ui.heading(
-                                        RichText::new(self.info_queued.to_string()), /* .color(Color32::YELLOW) */
-                                    );
-                                    ui.label(RichText::new("Queued").weak());
-                                });
-                            });
-                        });
-
-                        ui.add_space(4.0);
-
-                        let avg = self.info_average_sum
-                            .checked_div(self.info_crawled as u128)
-                            .unwrap_or(0);
-                        ui.columns(2, |cols| {
-                            cols[0].group(|ui| {
-                                ui.vertical_centered_justified(|ui| {
-                                    ui.heading(
-                                        RichText::new(self.info_skipped.to_string()), /* .color(Color32::LIGHT_RED) */
-                                    );
-                                    ui.label(RichText::new("Skipped").weak());
-                                });
-                            });
-                            cols[1].group(|ui| {
-                                ui.vertical_centered_justified(|ui| {
-                                    ui.heading(format!("{avg:.0}ms"));
-                                    ui.label(RichText::new("Average").weak());
-                                });
-                            });
-                        });
-
-                        ui.add_space(4.0);
-                    });
-
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::NONE)
-                    .show_inside(ui, |ui| match self.left_tab {
-                        LeftTab::Activity => {
-                            egui::Frame::NONE
-                                .fill(ui.visuals().extreme_bg_color)
-                                .inner_margin(egui::Margin::same(4))
-                                .show(ui, |ui| {
-                                    egui::ScrollArea::vertical()
-                                        .auto_shrink([false, false]) // Forces scroll area to fill the panel height
-                                        .show(ui, |ui| {
-                                            for entry in self.tab_activity_data.iter() {
-                                                let status = entry.status;
-
-                                                ui.horizontal(|ui| {
-                                                    let code_color = if status.is_success() {
-                                                        Color32::from_rgb(0, 100, 0)
-                                                    } else if status.is_client_error()
-                                                        || status.is_server_error()
-                                                    {
-                                                        Color32::from_rgb(100, 0, 0)
-                                                    } else {
-                                                        Color32::from_rgb(100, 100, 0)
-                                                    };
-
-                                                    // 1. Claim space on the left (Badge)
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            " {} ",
-                                                            status.as_str()
-                                                        ))
-                                                        .background_color(code_color)
-                                                        .color(Color32::WHITE),
-                                                    );
-
-                                                    // 2. Anchor the rest of the layout to the right
-                                                    ui.with_layout(
-                                                        egui::Layout::right_to_left(
-                                                            egui::Align::Center,
-                                                        ),
-                                                        |ui| {
-                                                            ui.label(
-                                                                RichText::new(
-                                                                    entry.timestamp.clone(),
-                                                                )
-                                                                .color(Color32::DARK_GRAY),
-                                                            );
-
-                                                            // 4. Fill the remaining middle space with the truncated address
-                                                            let url = Url::parse(&format!("https://{}{}", entry.domain, entry.path))
-                                                                .expect("domain must always be valid.");
-                                                            Self::widget_url(ui, &url, false);
-                                                        },
-                                                    );
-                                                });
-                                            }
-                                        });
-                                });
-                        }
-
-                        LeftTab::Queue => {
-                            egui::Frame::NONE
-                                .fill(ui.visuals().extreme_bg_color)
-                                .inner_margin(egui::Margin::same(4))
-                                .show(ui, |ui| {
-                                    egui::ScrollArea::vertical()
-                                        .auto_shrink([false, false])
-                                        .show(ui, |ui| {
-                                            for (count, url) in &self.tab_queued_data {
-                                                ui.horizontal(|ui| {
-                                                    // Depth Badge (Blue)
-                                                    ui.label(
-                                                        RichText::new(format!(" {} ", count))
-                                                            .background_color(Color32::from_rgb(
-                                                                60, 60, 60,
-                                                            ))
-                                                            .color(Color32::WHITE),
-                                                    );
-
-                                                    ui.with_layout(
-                                                        egui::Layout::right_to_left(
-                                                            egui::Align::Center,
-                                                        ),
-                                                        |ui| {
-                                                            // Using a simple indicator instead of time, as it hasn't been crawled yet
-                                                            ui.label(
-                                                                RichText::new("⏳")
-                                                                    .color(Color32::DARK_GRAY),
-                                                            );
-
-                                                            ui.with_layout(
-                                                                egui::Layout::left_to_right(
-                                                                    egui::Align::Center,
-                                                                ),
-                                                                |ui| {
-                                                                    ui.spacing_mut()
-                                                                        .item_spacing
-                                                                        .x = 0.0;
-                                                                    ui.label(url.domain().expect(
-                                                                        "domain must be valid",
-                                                                    ));
-                                                                    let weak_color = ui
-                                                                        .visuals()
-                                                                        .weak_text_color();
-                                                                    ui.visuals_mut()
-                                                                        .override_text_color =
-                                                                        Some(weak_color);
-                                                                    ui.add(
-                                                                        egui::Label::new(
-                                                                            url.path(),
-                                                                        )
-                                                                        .truncate(),
-                                                                    );
-                                                                },
-                                                            );
-                                                        },
-                                                    );
-                                                });
-                                            }
-                                        });
-                                });
-                        }
-
-                        LeftTab::Errors => {
-                            egui::Frame::NONE
-                                .fill(ui.visuals().extreme_bg_color)
-                                .inner_margin(egui::Margin::same(4))
-                                .show(ui, |ui| {
-                                    egui::ScrollArea::vertical()
-                                        .auto_shrink([false, false])
-                                        .show(ui, |ui| {
-                                            for (url, error) in &self.tab_errors_data {
-                                                ui.horizontal(|ui| {
-                                                    // Generic Error Badge
-                                                    ui.label(
-                                                        RichText::new(" ERR ")
-                                                            .background_color(Color32::from_rgb(
-                                                                120, 0, 0,
-                                                            ))
-                                                            .color(Color32::WHITE),
-                                                    );
-
-                                                    ui.with_layout(
-                                                        egui::Layout::right_to_left(
-                                                            egui::Align::Center,
-                                                        ),
-                                                        |ui| {
-                                                            // Display the error string on the right side instead of the timestamp
-                                                            ui.label(
-                                                                RichText::new(error.name())
-                                                                    .color(Color32::LIGHT_RED)
-                                                            ).on_hover_text(error.to_string());
-
-                                                            Self::widget_url(ui, url, false);
-                                                        },
-                                                    );
-                                                });
-                                            }
-                                        });
-                                });
-                        }
-                    });
             });
+    }
 
-        let cards_spacing = 4.0;
-        let down_triangle_icon = "🔻";
-        let left_triangle_icon = "◀";
-
-        fn add_stretched_right_cell(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
-            ui.scope(|ui| {
-                ui.set_min_width(ui.available_width());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), content);
-            });
-        }
-
-        // 1. Calculate the available space and subtract the right window's width
-        let right_window_width = 200.0;
-        let right_margin = 5.0;
-        // 150px (minimap) + 8px (inner frame margin) + 8px (bottom anchor margin) + 12px (visual gap)
-        let minimap_reserved_height = 178.0;
-
-        // 5. Central Panel
+    fn render_central_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        graph_frame: egui::Frame,
+        center_offset: f32,
+    ) {
         egui::CentralPanel::default()
             .frame(graph_frame)
             .show_inside(ui, |ui| {
@@ -1029,7 +676,7 @@ impl ViewEgui {
                                             );
                                         });
                                     } else {
-                                        ui.label("Invalid selection.");
+                                        ui.label("Invalid node selection.");
                                     }
                                 }
                                 None => {
@@ -1039,29 +686,38 @@ impl ViewEgui {
                         });
                 }
 
-                if self.show_outbound_window {
-                    let inspect_node = |id: u8| {};
-                    let node_button = |ui: &mut egui::Ui, label: &str, id: u8| {
-                        if ui.button(label).clicked() {
-                            println!("{}", id);
-                        }
-                    };
+                let links_opt = self
+                    .get_selected_node_payload()
+                    .and_then(|data| match data {
+                        NodeData::Page(metadata) => Some(&metadata.discovered_links),
+                        NodeData::Leaf(_url) => None,
+                    });
 
-                    egui::Window::new("Outbound Links")
-                        .open(&mut self.show_outbound_window)
-                        .resizable(true)
-                        .collapsible(false)
-                        .constrain_to(central_rect)
-                        .default_size([300.0, 200.0])
-                        .show(ui.ctx(), |ui| {
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                node_button(ui, "/docs/api/v3", 0);
-                                node_button(ui, "/changelog", 2);
-                                node_button(ui, "/pricing", 3);
-                                node_button(ui, "https://github.com/example/repo", 4);
-                            });
-                        });
-                }
+                let mut show_outbound_window = self.show_outbound_window;
+                egui::Window::new("Outbound Links")
+                    .open(&mut show_outbound_window)
+                    .resizable(true)
+                    .collapsible(false)
+                    .constrain_to(central_rect)
+                    .default_size([300.0, 200.0])
+                    .show(ui.ctx(), |ui| {
+                        if let Some(links) = links_opt {
+                            if links.len() > 0 {
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    for link in links {
+                                        ui.horizontal(|ui| {
+                                            Self::widget_url(ui, link, false);
+                                        });
+                                    }
+                                });
+                            } else {
+                                ui.label("Page contains no links.");
+                            }
+                        } else {
+                            ui.label("Invalid node selection.");
+                        }
+                    });
+                self.show_outbound_window = show_outbound_window;
 
                 ////////
                 let settings_navigation = &egui_graphs::SettingsNavigation::new()
@@ -1089,7 +745,7 @@ impl ViewEgui {
 
                 // 1. Trick the center calculation by expanding the LEFT boundary off-screen.
                 let mut virtual_rect = ui.available_rect_before_wrap();
-                virtual_rect.max.x -= right_window_width + right_margin;
+                virtual_rect.max.x -= center_offset;
 
                 // 2. Create the child UI with this shifted virtual rectangle
                 let mut graph_ui = ui.new_child(
@@ -1190,24 +846,113 @@ impl ViewEgui {
                         }
                     });
             });
+    }
 
-        // .frame(custom_panel_frame)
-        // .resizable(false)
-        // .default_size(200.0)
-        // .show_separator_line(false)
-        // .show_inside(ui, |ui| {
+    fn render_about_window(&mut self, ui: &mut egui::Ui) {
+        egui::Window::new("About")
+            .open(&mut self.show_about_window)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .resizable(false)
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.heading("Crawler-rs");
+                    ui.label(RichText::new("version 0.1.0").weak());
+                });
+                ui.separator();
+                ui.label("This application does awesome things.");
+                ui.horizontal(|ui| {
+                    ui.label("Source code:");
+                    ui.hyperlink_to("GitHub", "https://github.com/raydroplet/crawler-rs");
+                });
+            });
+    }
 
-        let y_offset = 26.0;
-        let margin_offset = right_margin as i8; // same value used for graph calculations
-        let margin = egui::Margin {
-            left: margin_offset,
-            right: margin_offset,
-            top: margin_offset,
-            bottom: margin_offset,
-        };
+    fn render_crawl_window(&mut self, ui: &mut egui::Ui) {
+        let mut should_close = false;
+        egui::Window::new("Crawl")
+            .open(&mut self.show_crawl_window)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                egui::Grid::new("crawl_input_grid")
+                    .num_columns(2)
+                    .spacing([10.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("URL:");
+                        ui.text_edit_singleline(&mut self.crawl_input_url);
+                        ui.end_row();
+
+                        ui.label("Depth:");
+                        ui.add(egui::DragValue::new(&mut self.crawl_input_depth).range(0..=1));
+                        ui.end_row();
+                    });
+
+                ui.add_space(12.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("🕷 Crawl Page").clicked() {
+                        let Ok(url) = Url::parse(&self.crawl_input_url) else {
+                            println!("failed to parse"); // TODO: provide a better warning
+                            return;
+                        };
+
+                        let request = CrawlRequest {
+                            source: url,
+                            depth: self.crawl_input_depth,
+                        };
+                        let command = CrawlCommand::Request(request);
+                        let _ = self.app_tx.send(AppRequest::Crawler(command));
+
+                        if !self.first_crawl {
+                            self.node_details_expanded = true;
+                            self.hubs_expanded = true;
+                            self.broken_expanded = true;
+                            self.graph_expanded = true;
+                            self.first_crawl = true;
+                        }
+
+                        should_close = true;
+                    }
+
+                    ui.add_enabled_ui(false, |ui| {
+                        if ui.button("⏹ Terminate").clicked() {
+                            let command = CrawlCommand::Terminate;
+                            let _ = self.app_tx.send(AppRequest::Crawler(command));
+                        };
+                    });
+                });
+            });
+
+        if should_close {
+            self.show_crawl_window = false;
+        }
+    }
+
+    fn render_right_window(
+        &mut self,
+        ui: &mut egui::Ui,
+        margin_offset: i8,
+        anchor_y_offset: f32,
+        width: f32,
+        minimap_reserved_height: f32,
+        cards_spacing: f32,
+    ) {
+        let down_triangle_icon = "🔻";
+        let left_triangle_icon = "◀";
+        let margin = egui::Margin::same(margin_offset);
+        //
+        fn add_stretched_right_cell(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+            ui.scope(|ui| {
+                ui.set_min_width(ui.available_width());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), content);
+            });
+        }
+        //
         egui::Window::new("Right_Inspector_Window")
             // Anchor to top right, with a 10px margin off the edges
-            .anchor(egui::Align2::RIGHT_TOP, [0.0, y_offset]) // WARN: y to match the top bar height
+            .anchor(egui::Align2::RIGHT_TOP, [0.0, anchor_y_offset]) // WARN: y expected to match the top bar height
             .resizable(false)
             .collapsible(false)
             .title_bar(false) // Hides the drag-bar so it looks like a built-in UI panel
@@ -1218,11 +963,11 @@ impl ViewEgui {
                     .inner_margin(margin),
             )
             .show(ui, |ui| {
-                ui.set_width(right_window_width); // Force the width
+                ui.set_width(width); // Force the width
 
                 // Calculate the maximum allowed height so it doesn't overlap the minimap
                 let max_height = ui.ctx().content_rect().height()
-                    - y_offset
+                    - anchor_y_offset
                     - (margin_offset as f32)
                     - minimap_reserved_height;
 
@@ -1283,21 +1028,29 @@ impl ViewEgui {
                                                 });
                                             ui.add_space(8.0);
 
+                                            let code_color = if metadata.status.is_success() {
+                                                Color32::from_rgb(0, 100, 0)
+                                            } else if metadata.status.is_client_error()
+                                                || metadata.status.is_server_error()
+                                            {
+                                                Color32::from_rgb(100, 0, 0)
+                                            } else {
+                                                Color32::from_rgb(100, 100, 0)
+                                            };
+
                                             egui::Grid::new("node_details_grid")
                                                 .num_columns(2)
                                                 .striped(true)
-                                                .spacing([40.0, 4.0])
+                                                .spacing([20.0, 4.0])
                                                 .show(ui, |ui| {
                                                     ui.label("Status");
                                                     add_stretched_right_cell(ui, |ui| {
                                                         ui.label(
                                                             RichText::new(format!(
                                                                 " {} ",
-                                                                metadata.status
+                                                                metadata.status.as_u16()
                                                             ))
-                                                            .background_color(Color32::from_rgb(
-                                                                0, 100, 0,
-                                                            ))
+                                                            .background_color(code_color)
                                                             .color(Color32::WHITE),
                                                         );
                                                     });
@@ -1339,7 +1092,7 @@ impl ViewEgui {
 
                                                     self.update_markdown_window();
                                                 }
-                                                if ui.button("🕸 Outbound").clicked() {
+                                                if ui.button("🕸 Links").clicked() {
                                                     self.show_outbound_window =
                                                         !self.show_outbound_window;
                                                 }
@@ -1408,7 +1161,7 @@ impl ViewEgui {
                                 egui::Grid::new("graph_details_grid")
                                     .num_columns(2)
                                     .striped(true)
-                                    .spacing([40.0, 4.0])
+                                    .spacing([20.0, 4.0])
                                     .show(ui, |ui| {
                                         ui.label("Nodes");
                                         add_stretched_right_cell(ui, |ui| {
@@ -1427,12 +1180,16 @@ impl ViewEgui {
                                 ui.add_space(8.0);
 
                                 ui.horizontal(|ui| {
-                                    // NOTE: icons needed
-                                    if ui.button("🎯 Center").clicked() {
-                                        self.free_graph_movement = !self.free_graph_movement;
-                                    }
+                                    let message = if self.free_graph_movement {
+                                        "🎯 Lock"
+                                    } else {
+                                        "🎯 Unlock"
+                                    };
                                     if ui.button("🔀 Reorganize").clicked() {
                                         Self::distribute_nodes_circle_generic(&mut self.graph);
+                                    }
+                                    if ui.button(message).clicked() {
+                                        self.free_graph_movement = !self.free_graph_movement;
                                     }
                                 });
 
@@ -1478,7 +1235,7 @@ impl ViewEgui {
                                                         1e-5..=1e-1,
                                                     )
                                                     .logarithmic(true)
-                                                    .max_decimals(3)
+                                                    .max_decimals(3),
                                                 );
                                                 ui.end_row();
 
@@ -1688,6 +1445,275 @@ impl ViewEgui {
                         });
                     });
             });
+    }
+
+    fn render_left_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        panel_frame: egui::Frame,
+        default_size: f32,
+    ) {
+        egui::Panel::left("left_crawling_input")
+            .frame(panel_frame.clone())
+            .resizable(true)
+            .default_size(default_size)
+            .show_inside(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.left_tab, LeftTab::Activity, "📈 Activity");
+                    ui.selectable_value(&mut self.left_tab, LeftTab::Queue, "⏳ Queued");
+                    ui.selectable_value(&mut self.left_tab, LeftTab::Errors, "❌ Errors");
+                });
+
+                ui.separator();
+
+                egui::Panel::bottom("left_metrics_footer")
+                    .frame(egui::Frame::NONE)
+                    .show_inside(ui, |ui| {
+                        ui.add_space(8.0);
+
+                        ui.columns(2, |cols| {
+                            cols[0].group(|ui| {
+                                ui.vertical_centered_justified(|ui| {
+                                    ui.heading(
+                                        RichText::new(self.info_crawled.to_string()), /* .color(Color32::LIGHT_BLUE) */
+                                    );
+                                    ui.label(RichText::new("Crawled").weak());
+                                });
+                            });
+                            cols[1].group(|ui| {
+                                ui.vertical_centered_justified(|ui| {
+                                    ui.heading(
+                                        RichText::new(self.info_queued.to_string()), /* .color(Color32::YELLOW) */
+                                    );
+                                    ui.label(RichText::new("Queued").weak());
+                                });
+                            });
+                        });
+
+                        ui.add_space(4.0);
+
+                        let avg = self.info_average_sum
+                            .checked_div(self.info_crawled as u128)
+                            .unwrap_or(0);
+                        ui.columns(2, |cols| {
+                            cols[0].group(|ui| {
+                                ui.vertical_centered_justified(|ui| {
+                                    ui.heading(
+                                        RichText::new(self.info_skipped.to_string()), /* .color(Color32::LIGHT_RED) */
+                                    );
+                                    ui.label(RichText::new("Skipped").weak());
+                                });
+                            });
+                            cols[1].group(|ui| {
+                                ui.vertical_centered_justified(|ui| {
+                                    ui.heading(format!("{avg:.0}ms"));
+                                    ui.label(RichText::new("Average").weak());
+                                });
+                            });
+                        });
+
+                        ui.add_space(4.0);
+                    });
+
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show_inside(ui, |ui| match self.left_tab {
+                        LeftTab::Activity => {
+                            egui::Frame::NONE
+                                .fill(ui.visuals().extreme_bg_color)
+                                .inner_margin(egui::Margin::same(4))
+                                .show(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .auto_shrink([false, false]) // Forces scroll area to fill the panel height
+                                        .show(ui, |ui| {
+                                            for entry in self.tab_activity_data.iter() {
+                                                let status = entry.status;
+
+                                                ui.horizontal(|ui| {
+                                                    let code_color = if status.is_success() {
+                                                        Color32::from_rgb(0, 100, 0)
+                                                    } else if status.is_client_error()
+                                                        || status.is_server_error()
+                                                    {
+                                                        Color32::from_rgb(100, 0, 0)
+                                                    } else {
+                                                        Color32::from_rgb(100, 100, 0)
+                                                    };
+
+                                                    // 1. Claim space on the left (Badge)
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            " {} ",
+                                                            status.as_u16()
+                                                        ))
+                                                        .background_color(code_color)
+                                                        .color(Color32::WHITE)
+                                                    );
+
+                                                    // 2. Anchor the rest of the layout to the right
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            ui.label(
+                                                                RichText::new(
+                                                                    entry.timestamp.clone(),
+                                                                )
+                                                                .color(Color32::DARK_GRAY),
+                                                            );
+
+                                                            // 4. Fill the remaining middle space with the truncated address
+                                                            let url = Url::parse(&format!("https://{}{}", entry.domain, entry.path))
+                                                                .expect("domain must always be valid.");
+                                                            Self::widget_url(ui, &url, false);
+                                                        },
+                                                    );
+                                                });
+                                            }
+                                        });
+                                });
+                        }
+
+                        LeftTab::Queue => {
+                            egui::Frame::NONE
+                                .fill(ui.visuals().extreme_bg_color)
+                                .inner_margin(egui::Margin::same(4))
+                                .show(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            for (count, url) in &self.tab_queued_data {
+                                                ui.horizontal(|ui| {
+                                                    // Depth Badge (Blue)
+                                                    ui.label(
+                                                        RichText::new(format!(" {} ", count))
+                                                            .background_color(Color32::from_rgb(
+                                                                60, 60, 60,
+                                                            ))
+                                                            .color(Color32::WHITE),
+                                                    );
+
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            // Using a simple indicator instead of time, as it hasn't been crawled yet
+                                                            ui.label(
+                                                                RichText::new("⏳")
+                                                                    .color(Color32::DARK_GRAY),
+                                                            );
+
+                                                            ui.with_layout(
+                                                                egui::Layout::left_to_right(
+                                                                    egui::Align::Center,
+                                                                ),
+                                                                |ui| {
+                                                                    ui.spacing_mut()
+                                                                        .item_spacing
+                                                                        .x = 0.0;
+                                                                    ui.label(url.domain().expect(
+                                                                        "domain must be valid",
+                                                                    ));
+                                                                    let weak_color = ui
+                                                                        .visuals()
+                                                                        .weak_text_color();
+                                                                    ui.visuals_mut()
+                                                                        .override_text_color =
+                                                                        Some(weak_color);
+                                                                    ui.add(
+                                                                        egui::Label::new(
+                                                                            url.path(),
+                                                                        )
+                                                                        .truncate(),
+                                                                    );
+                                                                },
+                                                            );
+                                                        },
+                                                    );
+                                                });
+                                            }
+                                        });
+                                });
+                        }
+
+                        LeftTab::Errors => {
+                            egui::Frame::NONE
+                                .fill(ui.visuals().extreme_bg_color)
+                                .inner_margin(egui::Margin::same(4))
+                                .show(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            for (url, error) in &self.tab_errors_data {
+                                                ui.horizontal(|ui| {
+                                                    // Generic Error Badge
+                                                    ui.label(
+                                                        RichText::new(" ERR ")
+                                                            .background_color(Color32::from_rgb(
+                                                                120, 0, 0,
+                                                            ))
+                                                            .color(Color32::WHITE),
+                                                    );
+
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            // Display the error string on the right side instead of the timestamp
+                                                            ui.label(
+                                                                RichText::new(error.name())
+                                                                    .color(Color32::LIGHT_RED)
+                                                            ).on_hover_text(error.to_string());
+
+                                                            Self::widget_url(ui, url, false);
+                                                        },
+                                                    );
+                                                });
+                                            }
+                                        });
+                                });
+                        }
+                    });
+            });
+    }
+
+    fn render_ui(&mut self, ui: &mut egui::Ui) {
+        let menu_frame = egui::Frame::default()
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(egui::Margin::symmetric(8, 4));
+
+        let graph_frame = egui::Frame::default()
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(egui::Margin::symmetric(0, 0));
+
+        let panel_frame = egui::Frame::window(&ui.style());
+
+        let left_panel_default_size = 220.0;
+        let right_window_width = 200.0;
+        let right_window_margin = 5.0;
+
+        self.render_top_menu(ui, menu_frame);
+        self.render_crawl_window(ui);
+        self.render_about_window(ui);
+        self.render_left_panel(ui, panel_frame, left_panel_default_size);
+
+        let center_offset = right_window_width + right_window_margin;
+        self.render_central_panel(ui, graph_frame, center_offset);
+
+        let anchor_y_offset = 26.0;
+        let minimap_reserved_height = 178.0;
+        let cards_spacing = 4.0;
+        self.render_right_window(
+            ui,
+            right_window_margin as i8,
+            anchor_y_offset,
+            right_window_width,
+            minimap_reserved_height,
+            cards_spacing,
+        );
     }
 }
 
