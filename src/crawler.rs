@@ -100,12 +100,6 @@ pub struct WebCrawler {
 const SIGNATURE: &str = "raydroplet";
 const REPOSITORY: &str = "crawler-rs";
 
-struct RequesterResult {
-    source: Url,
-    depth: i8,
-    html_body: String,
-}
-
 enum ManagerEvent {
     Request(CrawlRequest),
     Branch(Url, i8, HashSet<Url>),

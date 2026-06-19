@@ -1,8 +1,8 @@
-use crawler_rs::crawler::{CrawlCommand, CrawlRequest, CrawlResponse, ParserResult, WebCrawler};
-use reqwest::Url;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc;
+// use crawler_rs::crawler::{CrawlCommand, CrawlRequest, CrawlResponse, ParserResult, WebCrawler};
+// use reqwest::Url;
+// use std::sync::Arc;
+// use std::time::Duration;
+// use tokio::sync::mpsc;
 
 async fn crawling_test() {
     // let (tx, mut rx) = mpsc::channel(1024);

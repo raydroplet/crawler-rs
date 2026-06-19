@@ -1,7 +1,7 @@
 use eframe::{App, CreationContext, NativeOptions, run_native};
 use egui::{Pos2, Color32, Shape, Stroke};
 use egui_graphs::{
-    FruchtermanReingoldWithCenterGravity, FruchtermanReingoldWithCenterGravityState, Graph,
+    FruchtermanReingoldWithCenterGravity, FruchtermanReingoldWithCenterGravityState,
     LayoutForceDirected, DisplayEdge, EdgeProps, Node, DisplayNode, DrawContext, DefaultNodeShape
 };
 use petgraph::stable_graph::{NodeIndex, StableGraph, IndexType};
