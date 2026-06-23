@@ -18,8 +18,6 @@ pub enum CrawlCommand {
     Terminate,             // WARN: do we need an explict Terminate command?
 }
 
-// TODO: only inform a queued page if sure you gonna crawl it
-// (silently skip duplicates) avoid overuse of skipped
 pub enum CrawlResponse {
     Page(ParserResult), // occasionally returns the result of a single page crawl
     Queued(Url, usize), // url, number of queued links in it
@@ -29,7 +27,6 @@ pub enum CrawlResponse {
 
 ////
 
-// TODO: define the possible error types
 #[derive(Debug, Clone)]
 pub enum CrawlError {
     Network(String),
@@ -39,7 +36,6 @@ pub enum CrawlError {
     Other(String),
 }
 
-// TODO: test
 impl fmt::Display for CrawlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

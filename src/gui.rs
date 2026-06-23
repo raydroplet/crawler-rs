@@ -2,7 +2,6 @@
 use crate::app::{
     AppRequest, AppResponse, CrawlCommand, CrawlError, CrawlEvent, CrawlRequest, PageMetadata,
 };
-// use crossbeam_channel as crossbeam;
 use crossbeam_channel as crossbeam;
 use eframe;
 use egui::{Color32, Pos2, RichText, Shape, Stroke};
@@ -17,7 +16,7 @@ use petgraph::{
 };
 use rand::RngExt;
 use reqwest::{StatusCode, Url};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::f32::consts::TAU;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -66,18 +65,15 @@ struct GraphState {
 ////////////////////
 /// custom drawing
 
-// 1. Define a stateless unit struct
 #[derive(Clone)]
 pub struct FixedWidthEdgeShape;
 
-// 2. Implement From<EdgeProps<E>> (Only E is generic here in 0.30.0)
 impl<E: Clone> From<EdgeProps<E>> for FixedWidthEdgeShape {
     fn from(_props: EdgeProps<E>) -> Self {
-        Self // No internal state needed
+        Self
     }
 }
 
-// 3. Implement the DisplayEdge trait
 impl<N: Clone, E: Clone, Ty: EdgeType, Ix: IndexType, Dn: DisplayNode<N, E, Ty, Ix>>
     DisplayEdge<N, E, Ty, Ix, Dn> for FixedWidthEdgeShape
 {
@@ -87,20 +83,13 @@ impl<N: Clone, E: Clone, Ty: EdgeType, Ix: IndexType, Dn: DisplayNode<N, E, Ty, 
         end: &Node<N, E, Ty, Ix, Dn>,
         ctx: &DrawContext<'_>,
     ) -> Vec<Shape> {
-        // 1. Transform world (canvas) coordinates into UI screen coordinates
         let start_pos = ctx.meta.canvas_to_screen_pos(start.location());
         let end_pos = ctx.meta.canvas_to_screen_pos(end.location());
-
-        // 2. Since we are in pure screen space, a width of 2.0 is naturally
-        // fixed to 2 physical pixels on the monitor, ignoring zoom.
         let stroke = Stroke::new(0.5, Color32::GRAY);
-
         vec![Shape::line_segment([start_pos, end_pos], stroke)]
     }
 
-    fn update(&mut self, _state: &EdgeProps<E>) {
-        // Nothing to update since we don't store state
-    }
+    fn update(&mut self, _state: &EdgeProps<E>) {}
 
     fn is_inside(
         &self,
@@ -149,36 +138,13 @@ pub struct ViewEgui {
     tab_activity_data: VecDeque<ActivityMetadata>,
     tab_queued_data: VecDeque<(usize, Url)>,
     tab_errors_data: VecDeque<(Url, CrawlError)>,
-    hubs_data: Vec<(usize, Url)>,
-    broken_data: Vec<(StatusCode, Url)>,
+    hubs_data: HashSet<(usize, Url)>,
+    broken_data: HashSet<(StatusCode, Url)>,
     info_crawled: usize,
     info_queued: usize,
     info_skipped: usize,
     info_average_sum: u128,
 }
-
-// ui.horizontal(|ui| {
-//     // NOTE: 0.100
-//     ui.add(egui::Slider::new(&mut state.base.dt, 0.001..=0.2).text("dt"));
-//     info_icon(ui, "Integration time step (Euler). Larger = faster movement but less stable.");
-// });
-// ui.horizontal(|ui| {
-//     // NOTE: 0.01
-//     ui.add(egui::Slider::new(&mut state.base.damping, 0.0..=1.0).text("damping"));
-//     info_icon(ui, "Velocity damping per frame. 1 = no damping, 0 = immediate stop.");
-// });
-// ui.horizontal(|ui| {
-//     // NOTE: 3.0
-//     ui.add(egui::Slider::new(&mut state.base.max_step, 0.1..=50.0).text("max_step"));
-//     info_icon(ui, "Maximum pixel displacement applied per frame to prevent explosions.");
-// });
-// ui.horizontal(|ui| {
-//     // NOTE: 0.015
-//     ui.add(egui::Slider::new(&mut state.base.epsilon, 1e-5..=1e-1).logarithmic(true).text("epsilon"));
-//     info_icon(ui, "Minimum distance clamp to avoid division by zero in force calculations.");
-// });
-
-// use egui_graphs::{FruchtermanReingoldWithExtrasState, Extra, CenterGravity};
 
 impl ViewEgui {
     pub fn new(
@@ -187,14 +153,6 @@ impl ViewEgui {
     ) -> Self {
         let mut graph = CustomGraph::new(StableGraph::default());
         Self::distribute_nodes_circle_generic(&mut graph);
-
-        let text = "# Regnata removete motis patris
-
-Lorem markdownum finibus memorique ignis per alvo longeque dea eburnas serior,
-eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
-
-> Ad Philammon viarum genitas nullosque cervicis legem; per simul simulantis
-> ignisque solvo num; tellus sequitur: oro. Quibus adspexisse Ilios. Mentisque";
 
         let state = GraphState {
             is_running: true,
@@ -225,7 +183,7 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             show_markdown_window: false,
             show_outbound_window: false,
             show_about_window: false,
-            markdown_text: String::from(text),
+            markdown_text: String::new(),
             markdown_url: None,
             left_tab: LeftTab::Activity,
             free_graph_movement: false,
@@ -245,8 +203,8 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
             tab_activity_data: VecDeque::new(),
             tab_queued_data: VecDeque::new(),
             tab_errors_data: VecDeque::new(),
-            hubs_data: Vec::new(),
-            broken_data: Vec::new(),
+            hubs_data: HashSet::new(),
+            broken_data: HashSet::new(),
             //
             info_crawled: 0,
             info_queued: 0,
@@ -260,11 +218,11 @@ eheu lupos ferocis raptatur altis bicorni Flentibus soror! Scilicet tollit.
 
         options.viewport = egui::ViewportBuilder::default()
             .with_resizable(false)
-            .with_inner_size([1920.0 / 2.0, (1080.0 / 2.0)])
+            .with_inner_size([(1920.0 / 4.0) * 3.0, (1080.0 / 4.0) * 3.0])
             .with_active(false);
 
         eframe::run_native(
-            "egui_graphs_basic_demo",
+            "crawler-rs",
             options,
             Box::new(|_context| Ok(Box::new(view))),
         )
@@ -313,36 +271,14 @@ impl ViewEgui {
         graph
     }
 
-    #[allow(dead_code)]
-    fn graph_types(&mut self) {
-        type L1 = egui_graphs::LayoutHierarchical;
-        type S1 = egui_graphs::LayoutStateHierarchical;
-        let _view = egui_graphs::GraphView::<_, _, _, _, _, _, S1, L1>::new(&mut self.graph);
-
-        type L2 =
-            egui_graphs::LayoutForceDirected<egui_graphs::FruchtermanReingoldWithCenterGravity>;
-        type S2 = egui_graphs::FruchtermanReingoldWithCenterGravityState;
-        let _view = egui_graphs::GraphView::<_, _, _, _, _, _, S2, L2>::new(&mut self.graph);
-
-        type L3 = egui_graphs::LayoutForceDirected<egui_graphs::FruchtermanReingold>;
-        type S3 = egui_graphs::FruchtermanReingoldState;
-        let _view = egui_graphs::GraphView::<_, _, _, _, _, _, S3, L3>::new(&mut self.graph);
-    }
-
     fn format_timestamp(timepoint: SystemTime) -> String {
-        // 1. Get the duration since Jan 1, 1970
         let Ok(duration) = timepoint.duration_since(UNIX_EPOCH) else {
             return String::from("Time went backwards");
         };
-
         let total_seconds = duration.as_secs();
-
-        // 2. Isolate the seconds for the current day (86,400 seconds in a day)
         let seconds_today = total_seconds % 86400;
-
         let hours = seconds_today / 3600;
         let minutes = (seconds_today % 3600) / 60;
-
         format!("{:02}:{:02}", hours, minutes)
     }
 
@@ -351,9 +287,6 @@ impl ViewEgui {
         if let Ok(message) = self.app_rx.try_recv() {
             match message {
                 AppResponse::Crawler(event) => match event {
-                    // TODO: clean this up
-                    // TODO: instead of a node per url, have the nodes be domains and when
-                    // clicking in one a new graph is shown for all the /path pages in it.
                     CrawlEvent::Page(metadata) => {
                         // activity tab.
                         // push element. limit the ammount.
@@ -376,13 +309,24 @@ impl ViewEgui {
                         // hubs card.
                         // inserts into an already sorted vec
                         let item = (metadata.discovered_links.len(), metadata.url.clone());
-                        let pos = self.hubs_data.partition_point(|(n, _)| *n >= item.0);
-                        self.hubs_data.insert(pos, item);
+                        self.hubs_data.insert(item);
 
-                        // broken widget
+                        // markdown window (quick fix)
+                        let selected_node_url = self
+                            .get_selected_node_payload()
+                            .and_then(|data| match data {
+                                NodeData::Page(metadata) => Some(&metadata.url),
+                                NodeData::Leaf(url) => Some(url),
+                        });
+                        if Some(&metadata.url) == selected_node_url {
+                            println!("update");
+                            self.update_markdown_window();
+                        }
+
+                        // (the) broken widget
                         if metadata.status.is_server_error() || metadata.status.is_client_error() {
                             self.broken_data
-                                .push((metadata.status, metadata.url.clone()));
+                                .insert((metadata.status, metadata.url.clone()));
                         }
 
                         // node
@@ -400,9 +344,12 @@ impl ViewEgui {
                             } else {
                                 // add a root node
                                 //
-                                // WARN:None? also check similar calls.
-                                // the crawler must always return valid .domain() urls.
-                                let label = String::from(metadata.url.domain().unwrap_or("None"));
+                                // TODO: consider using a custom type instead of reqwest::Url.
+                                // returned urls by the crawler must always have valid domains.
+                                // unwrap/expect everywhere is redundant.
+                                let label = String::from(
+                                    metadata.url.domain().expect("domain must always be valid"),
+                                );
                                 let index = self.graph.add_node_with_label(
                                     NodeData::Page(metadata.clone()),
                                     label.clone(),
@@ -501,7 +448,7 @@ impl ViewEgui {
 
             ui.add(egui::Label::new(text).truncate());
 
-            // Mute the path so the domain stands out as the primary identifier
+            // mute the path so the domain stands out as the primary identifier
             ui.add({
                 egui::Label::new(
                     egui::RichText::new(url.path())
@@ -554,7 +501,7 @@ impl ViewEgui {
                     self.update_markdown_window();
                     println!("Node {:?} was clicked", payload);
                 }
-                // Catch-all for other events like Pan, Zoom, or Edge selections
+                // catch-all for other events like pan, zoom, or edge selections
                 _ => {}
             }
         }
@@ -565,24 +512,23 @@ impl ViewEgui {
         egui::Panel::top("top_menu_bar")
             .frame(menu_frame)
             .show_inside(ui, |ui| {
-                // 1. Get the total width available in the panel
                 let available_width = ui.available_width();
 
-                // 2. Estimate the width of your menu items.
-                // You may need to tweak this number based on your font size and labels.
-                // "File" + "View" + "Graph" ≈ 150px
+                // estimates the width of menu items.
+                // you may need to tweak this number based on your font size and labels.
+                // "File" + "View" + "Graph" + "..."
                 let estimated_menu_width = 200.0;
 
-                // 3. Calculate the padding needed on the left to center it
+                // calculate the padding needed on the left to center it
                 let left_padding = (available_width - estimated_menu_width) / 2.0;
 
                 ui.horizontal(|ui| {
-                    // 4. Push the menu bar to the right by adding empty space
+                    // push the menu bar to the right by adding empty space
                     if left_padding > 0.0 {
                         ui.add_space(left_padding);
                     }
 
-                    // 5. Draw the menu bar
+                    // draw the menu bar
                     egui::MenuBar::new().ui(ui, |ui| {
                         ui.menu_button("File", |ui| {
                             if ui.button("❌ Exit").clicked() {
@@ -1329,7 +1275,6 @@ impl ViewEgui {
                                     .id_salt("hubs_scroll_area")
                                     .max_height(200.0)
                                     .show(ui, |ui| {
-                                        // NOTE: it's just this loop. the code above is the mapping
                                         for (value, url) in self.hubs_data.iter() {
                                             ui.horizontal(|ui| {
                                                 ui.vertical(|ui| {
@@ -1366,7 +1311,8 @@ impl ViewEgui {
                                                     let progress = (*value as f32
                                                         / self
                                                             .hubs_data
-                                                            .first()
+                                                            .iter()
+                                                            .next()
                                                             .expect("Lenght check already done")
                                                             .0
                                                             as f32)
