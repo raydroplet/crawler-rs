@@ -16,7 +16,7 @@ use petgraph::{
 };
 use rand::RngExt;
 use reqwest::{StatusCode, Url};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, BTreeSet, VecDeque};
 use std::f32::consts::TAU;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -138,8 +138,8 @@ pub struct ViewEgui {
     tab_activity_data: VecDeque<ActivityMetadata>,
     tab_queued_data: VecDeque<(usize, Url)>,
     tab_errors_data: VecDeque<(Url, CrawlError)>,
-    hubs_data: HashSet<(usize, Url)>,
-    broken_data: HashSet<(StatusCode, Url)>,
+    hubs_data: BTreeSet<(usize, Url)>,
+    broken_data: BTreeSet<(StatusCode, Url)>,
     info_crawled: usize,
     info_queued: usize,
     info_skipped: usize,
@@ -203,8 +203,8 @@ impl ViewEgui {
             tab_activity_data: VecDeque::new(),
             tab_queued_data: VecDeque::new(),
             tab_errors_data: VecDeque::new(),
-            hubs_data: HashSet::new(),
-            broken_data: HashSet::new(),
+            hubs_data: BTreeSet::new(),
+            broken_data: BTreeSet::new(),
             //
             info_crawled: 0,
             info_queued: 0,
@@ -806,7 +806,7 @@ impl ViewEgui {
                     ui.label(RichText::new("version 0.1.0").weak());
                 });
                 ui.separator();
-                ui.label("This application does awesome things.");
+                // ui.label("This application does awesome things.");
                 ui.horizontal(|ui| {
                     ui.label("Source code:");
                     ui.hyperlink_to("GitHub", "https://github.com/raydroplet/crawler-rs");
@@ -1275,7 +1275,7 @@ impl ViewEgui {
                                     .id_salt("hubs_scroll_area")
                                     .max_height(200.0)
                                     .show(ui, |ui| {
-                                        for (value, url) in self.hubs_data.iter() {
+                                        for (value, url) in self.hubs_data.iter().rev() {
                                             ui.horizontal(|ui| {
                                                 ui.vertical(|ui| {
                                                     ui.horizontal(|ui| {
@@ -1311,7 +1311,7 @@ impl ViewEgui {
                                                     let progress = (*value as f32
                                                         / self
                                                             .hubs_data
-                                                            .iter()
+                                                            .iter().rev()
                                                             .next()
                                                             .expect("Lenght check already done")
                                                             .0
@@ -1360,7 +1360,7 @@ impl ViewEgui {
                                 ui.separator();
                                 ui.add_space(4.0);
 
-                                for (status, url) in self.broken_data.iter() {
+                                for (status, url) in self.broken_data.iter().rev() {
                                     ui.horizontal(|ui| {
                                         ui.vertical(|ui| {
                                             ui.horizontal(|ui| {
