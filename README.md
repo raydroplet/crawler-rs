@@ -4,14 +4,5 @@ A modern asynchronous web crawler written in Rust, with live dynamic graph visua
 
 <img src="etc/interface.png" alt="Interface screenshot">
 
-## Building
-If you are on nix:
-```bash
-$ nix-shell etc/shell.nix
-```
-
-Then build and run:
-```bash
-$ cargo build
-$ cargo run --release
-```
+## Read More
+- Read the full blog post on the project: https://raydroplet.dev/log/crawler
