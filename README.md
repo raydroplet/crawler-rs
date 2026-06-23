@@ -1,6 +1,6 @@
 ## 🌐 Crawler
 
-A modern asynchronous web crawler written in Rust using the actor model and Tokio, with live dynamic graph visualization and interactive GUI.
+A modern asynchronous web crawler written in Rust, with live dynamic graph visualization and interactive GUI.
 
 <img src="etc/interface.png" alt="Interface screenshot">
 
